@@ -1,0 +1,140 @@
+server:
+  host: "0.0.0.0"
+  port: 8000
+  require_auth: true
+  client_keys:
+    - "${OCTOPROXY_CLIENT_KEY:-octoproxy-dev-key}"
+
+routing:
+  default_key_selection: round_robin
+  max_total_attempts: 4
+  allow_model_fallback: true
+  allow_provider_fallback: true
+
+providers:
+  groq:
+    enabled: true
+    type: openai_compatible
+    base_url: "https://api.groq.com/openai/v1"
+    priority: 20
+    key_selection: round_robin
+
+    keys:
+      - name: groq-primary
+        value: "${GROQ_API_KEY_1}"
+      - name: groq-secondary
+        value: "${GROQ_API_KEY_2}"
+
+    models:
+      - id: openai/gpt-oss-120b
+        enabled: true
+        priority: 10
+      - id: openai/gpt-oss-20b
+        enabled: true
+        priority: 20
+
+    limits:
+      requests_per_minute: 30
+      requests_per_day: 1000
+      tokens_per_minute: 8000
+      tokens_per_day: 100000
+
+    retry:
+      max_attempts: 3
+      base_delay_ms: 50
+      max_delay_ms: 2000
+      jitter_ms: 50
+
+    health:
+      failure_threshold: 3
+      cooldown_seconds: 30
+      long_cooldown_seconds: 300
+
+  openrouter:
+    enabled: true
+    type: openai_compatible
+    base_url: "https://openrouter.ai/api/v1"
+    priority: 10
+    key_selection: round_robin
+
+    keys:
+      - name: openrouter-primary
+        value: "${OPENROUTER_API_KEY_1}"
+      - name: openrouter-secondary
+        value: "${OPENROUTER_API_KEY_2}"
+      - name: openrouter-tertiary
+        value: "${OPENROUTER_API_KEY_3}"
+
+    models:
+      - id: stealth/ox-alpha
+        enabled: true
+        priority: 10
+      - id: z-ai/glm-5.2:free
+        enabled: true
+        priority: 20
+      - id: z-ai/glm-5.2:free
+        enabled: true
+        priority: 30
+      - id: nvidia/nemotron-3-ultra-550b-a55b:free
+        enabled: true
+        priority: 40
+
+    limits:
+      requests_per_minute: 20
+      requests_per_day: 200
+
+    retry:
+      max_attempts: 3
+      base_delay_ms: 50
+      max_delay_ms: 2000
+      jitter_ms: 50
+
+    health:
+      failure_threshold: 3
+      cooldown_seconds: 30
+      long_cooldown_seconds: 300
+
+  nvidia_nim:
+    enabled: true
+    type: openai_compatible
+    base_url: "https://integrate.api.nvidia.com/v1"
+    priority: 30
+    key_selection: round_robin
+
+    keys:
+      - name: nim-primary
+        value: "${NVIDIA_NIM_API_KEY_1}"
+      - name: nim-secondary
+        value: "${NVIDIA_NIM_API_KEY_2}"
+
+    models:
+      - id: nvidia/nemotron-3.5-lightning-30b-a3b
+        enabled: true
+        priority: 10
+      - id: google/gemma-4-31b-it
+        enabled: true
+        priority: 20
+
+    limits:
+      requests_per_minute: 40
+      requests_per_day: 400
+
+    retry:
+      max_attempts: 3
+      base_delay_ms: 50
+      max_delay_ms: 2000
+      jitter_ms: 50
+
+    health:
+      failure_threshold: 3
+      cooldown_seconds: 30
+      long_cooldown_seconds: 300
+
+aliases:
+  fast:
+    - provider: nvidia_nim
+      model: nvidia/nemotron-3.5-lightning-30b-a3b
+
+  reasoning:
+    - provider: openrouter
+      model: z-ai/glm-5.2:free

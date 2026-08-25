@@ -1,0 +1,175 @@
+# Reference examples for adding providers. Copy relevant blocks into
+# config/octoproxy.yaml under `providers:` — this file is not loaded
+# automatically.
+#
+# Limits below are transcribed from each provider's published docs (see
+# ARCHITECTURE.md / README §8) as of the last time this file was updated.
+# They can drift — treat them as a starting point, verify against
+# console.groq.com/settings/limits, openrouter.ai/docs/limits, etc.,
+# before relying on them for capacity planning.
+
+providers:
+
+  # --- Groq -----------------------------------------------------------
+  # RPM/RPD/TPM/TPD are org-level (shared across all keys), Developer plan.
+  # Cached tokens do not count. 429 responses include `retry-after` (sec);
+  # OctoProxy already honors that header automatically (see
+  # app/core/errors.py parse_retry_after) instead of the cooldown below.
+  groq:
+    enabled: true
+    type: openai_compatible
+    base_url: "https://api.groq.com/openai/v1"
+    priority: 10
+    key_selection: round_robin
+    keys:
+      - name: groq-primary
+        value: "${GROQ_API_KEY_1}"
+      - name: groq-secondary
+        value: "${GROQ_API_KEY_2}"
+    models:
+      - { id: llama-3.3-70b-versatile, enabled: true, priority: 10 }
+      - { id: llama-3.1-8b-instant, enabled: true, priority: 20 }
+      - { id: openai/gpt-oss-120b, enabled: true, priority: 30 }
+      - { id: openai/gpt-oss-20b, enabled: true, priority: 40 }
+      - { id: qwen/qwen3.6-27b, enabled: true, priority: 50 }
+      - { id: groq/compound, enabled: false, priority: 60 }
+    # NOTE: limits here apply per-provider in OctoProxy's local enforcement.
+    # Because Groq's limits are genuinely per-model (see per-model table
+    # below), prefer setting per-model budgets via aliases/priority rather
+    # than one provider-wide number if you route across several Groq models
+    # heavily — OctoProxy enforces at provider+key granularity, not per
+    # model, in v1 (see ARCHITECTURE.md non-goals).
+    limits:
+      requests_per_minute: 30       # matches the tightest common model RPM
+      requests_per_day: 1000        # matches llama-3.3-70b-versatile RPD (its tightest)
+      tokens_per_minute: 8000
+      tokens_per_day: 100000
+    retry: { max_attempts: 3, base_delay_ms: 50, max_delay_ms: 2000, jitter_ms: 50 }
+    health: { failure_threshold: 3, cooldown_seconds: 30, long_cooldown_seconds: 300 }
+    # Per-model reference (RPM / RPD / TPM / TPD), Developer plan, for
+    # sizing per-key limits above if you split keys per model instead:
+    #   llama-3.1-8b-instant        30 / 14.4K / 6K  / 500K
+    #   llama-3.3-70b-versatile     30 / 1K    / 12K / 100K
+    #   groq/compound(-mini)        30 / 250   / 70K / -
+    #   openai/gpt-oss-120b/20b     30 / 1K    / 8K  / 200K
+    #   openai/gpt-oss-safeguard-20b 30 / 1K   / 8K  / 200K
+    #   qwen/qwen3.6-27b            30 / 1K    / 8K  / 200K
+    #   meta-llama/llama-prompt-guard-2-22m/86m 30 / 14.4K / 15K / 500K
+    #   canopylabs/orpheus-*        10 / 100   / 1.2K / 3.6K
+    #   whisper-large-v3(-turbo)    20 RPM / 2K RPD / 7.2K ASH / 28.8K ASD
+
+  # --- NVIDIA NIM -----------------------------------------------------
+  # NVIDIA does not publish a single documented RPM figure the way Groq
+  # does; 40 RPM here is a conservative, self-imposed local ceiling — treat
+  # OctoProxy's local limiter as the actual guardrail, not a quoted vendor
+  # number.
+  nvidia_nim:
+    enabled: false
+    type: openai_compatible
+    base_url: "https://integrate.api.nvidia.com/v1"
+    priority: 20
+    keys:
+      - name: nim-primary
+        value: "${NVIDIA_NIM_API_KEY}"
+    models:
+      - { id: meta/llama-3.1-70b-instruct, enabled: true, priority: 10 }
+    limits:
+      requests_per_minute: 40
+    retry: { max_attempts: 3 }
+    health: { failure_threshold: 3, cooldown_seconds: 30 }
+
+  # --- OpenRouter (aggregator, itself multi-provider) ------------------
+  # OpenRouter's limiting is NOT a flat RPM like Groq's. It is two
+  # independent systems:
+  #   1. Credit limits -> 402 Payment Required (account balance <= 0, or a
+  #      per-key `limit_remaining` cap exhausted). Not a rate limit at all.
+  #   2. Rate limits -> 429 Too Many Requests, which only applies as a hard
+  #      platform cap to FREE model variants (ids ending ":free"):
+  #        < 10 lifetime credits purchased -> 20 RPM / 50 RPD
+  #        >= 10 lifetime credits purchased -> 20 RPM / 1000 RPD
+  #      Paid (non-free) models have no OpenRouter-side request cap of
+  #      their own — a 429 on a paid model means the *upstream* provider
+  #      OpenRouter routed to is rate-limiting (OpenRouter automatically
+  #      retries other providers/fallback models for you before the error
+  #      reaches you). A 429 always carries `Retry-After` when a retry hint
+  #      is available; OctoProxy already honors it.
+  # The requests_per_minute below is therefore only meaningful if you are
+  # deliberately using ":free" model variants — set it to 20 in that case,
+  # or omit local RPM entirely for paid models and rely on OctoProxy's
+  # error-aware failover for the occasional upstream 429/402.
+  openrouter:
+    enabled: false
+    type: openai_compatible
+    base_url: "https://openrouter.ai/api/v1"
+    priority: 30
+    keys:
+      - name: openrouter-primary
+        value: "${OPENROUTER_API_KEY}"
+    models:
+      - { id: meta-llama/llama-3.3-70b-instruct, enabled: true, priority: 10 }
+      # Example free variant — subject to the 20 RPM / 50-or-1000 RPD caps
+      # described above:
+      - { id: meta-llama/llama-3.3-70b-instruct:free, enabled: false, priority: 20 }
+    headers:
+      HTTP-Referer: "https://octoprograms.example"
+      X-Title: "OctoProxy"
+    limits:
+      requests_per_minute: 20   # only binding for ":free" variants; see note above
+    retry: { max_attempts: 3 }
+    health: { failure_threshold: 3, cooldown_seconds: 30 }
+
+  # --- Bytez -----------------------------------------------------------
+  # Bytez is credit-based, not RPM-based, and concurrency (not requests/
+  # minute) is the actual throttle. Auth is a raw key in the Authorization
+  # header with NO "Bearer " prefix (see their curl examples), so this uses
+  # authentication.type: header rather than the bearer default.
+  #   Free plan       ($1 free credit / 4wk): open models <=7B, 1 concurrent
+  #                    request; closed models 10 req/sec.
+  #   Pay-as-you-go   ($3/mo, $5 credit): concurrency scales with trailing
+  #                    4-week credits purchased —
+  #                      $3+   -> 4 concurrent  (<=7B)
+  #                      $10+  -> 4 concurrent  (<=35B)
+  #                      $25+  -> 10 concurrent (<=70B)
+  #                      $50+  -> 20 concurrent (<=120B)
+  #                      $100+ -> 40 concurrent
+  #                      $500+ -> 200 concurrent
+  #                      $1000+-> 400 concurrent
+  #                    closed models: unlimited on pay-as-you-go.
+  #   402 Payment Required = insufficient credits (credits expire 4wk after
+  #   purchase). Map `concurrent_requests` below to your actual tier.
+  bytez:
+    enabled: false
+    type: openai_compatible
+    base_url: "https://api.bytez.com/v1"
+    priority: 40
+    authentication:
+      type: header
+      header: "Authorization"
+      prefix: ""   # Bytez expects the raw key, not "Bearer <key>"
+    keys:
+      - name: bytez-primary
+        value: "${BYTEZ_API_KEY}"
+    models:
+      - { id: meta-llama/Llama-3-70b, enabled: true, priority: 10 }
+    limits:
+      concurrent_requests: 4   # matches the $3-$10 tier; raise if you buy more credits
+    retry: { max_attempts: 3 }
+    health: { failure_threshold: 3, cooldown_seconds: 30 }
+
+  # --- Generic template for any OpenAI-compatible provider --------------
+  example:
+    enabled: false
+    type: openai_compatible
+    base_url: "https://example.com/v1"
+    priority: 100
+    authentication:
+      type: bearer          # bearer | header | none
+      header: "Authorization"
+      prefix: "Bearer "
+    keys:
+      - name: primary
+        value: "${EXAMPLE_API_KEY}"
+    models:
+      - { id: example-model, enabled: true, priority: 10 }
+    limits:
+      requests_per_minute: 10
