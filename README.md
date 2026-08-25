@@ -1,4 +1,4 @@
-# OctoProxy
+# OctoFlux
 
 A small, fast, OpenAI-compatible LLM gateway. It sits between your
 application and multiple OpenAI-compatible providers (Groq, OpenRouter,
@@ -7,13 +7,13 @@ requests alive by rotating keys, rotating models, and failing over between
 providers when something goes wrong — without you writing any retry code in
 your application.
 
-Point an OpenAI SDK at OctoProxy and it works without knowing which upstream
+Point an OpenAI SDK at OctoFlux and it works without knowing which upstream
 provider actually served the request:
 
 ```python
 from openai import OpenAI
 
-client = OpenAI(base_url="http://localhost:8000/v1", api_key="octoproxy-dev-key")
+client = OpenAI(base_url="http://localhost:8000/v1", api_key="OctoFlux-dev-key")
 
 response = client.chat.completions.create(
     model="auto",  # or a specific model id, or an alias like "fast"
@@ -27,7 +27,7 @@ LiteLLM/Portkey/OpenRouter).
 
 ---
 
-## 1. What OctoProxy is
+## 1. What OctoFlux is
 
 - An async FastAPI service exposing `POST /v1/chat/completions`,
   `POST /v1/responses`, and `GET /v1/models`.
@@ -46,7 +46,7 @@ LiteLLM/Portkey/OpenRouter).
 
 ```
 Client
-  → auth (OctoProxy client key)
+  → auth (OctoFlux client key)
   → Router            (resolve model → ordered provider/model/key candidates)
   → Scheduler/Retry    (send upstream, classify result, backoff, fail over)
   → OpenAICompatibleProvider (pooled httpx.AsyncClient per provider)
@@ -55,7 +55,7 @@ Client
 ```
 
 ```
-octoproxy/
+OctoFlux/
 ├── app/
 │   ├── main.py                 # FastAPI app + lifespan (loads config, builds AppState)
 │   ├── api/
@@ -82,7 +82,7 @@ octoproxy/
 │   ├── admin/status.py         # /health /admin/status /admin/providers /admin/usage /metrics /admin/reload
 │   └── observability/logging.py# structured JSON logging, secret redaction
 ├── config/
-│   ├── octoproxy.yaml          # runnable example config (Groq + disabled OpenRouter)
+│   ├── OctoFlux.yaml          # runnable example config (Groq + disabled OpenRouter)
 │   └── providers.example.yaml  # reference blocks for more providers
 ├── tests/                      # 67 tests, mocked upstreams via respx (no real network)
 ├── scripts/benchmark.py        # routing/scheduling overhead benchmark
@@ -96,16 +96,16 @@ octoproxy/
 Requires Python 3.11+.
 
 ```bash
-git clone <this repo> octoproxy && cd octoproxy
+git clone <this repo> OctoFlux && cd OctoFlux
 pip install -e ".[dev]"       # or: pip install fastapi "uvicorn[standard]" httpx pydantic pyyaml
 cp .env.example .env
-# edit .env: set OCTOPROXY_CLIENT_KEY and at least one provider's API key
+# edit .env: set OctoFlux_CLIENT_KEY and at least one provider's API key
 ```
 
 ## 4. Configuration
 
-Everything lives in `config/octoproxy.yaml` (path overridable via
-`OCTOPROXY_CONFIG`). Secrets are never written to YAML directly — reference
+Everything lives in `config/OctoFlux.yaml` (path overridable via
+`OctoFlux_CONFIG`). Secrets are never written to YAML directly — reference
 environment variables:
 
 ```yaml
@@ -184,7 +184,7 @@ Requesting `model: "fast"` tries the alias targets in the listed order.
 Requesting `model: "auto"` tries every enabled model across every enabled
 provider, sorted by `(provider.priority, model.priority)`. Requesting an
 exact model id only ever fails over across **providers offering that same
-id** — OctoProxy never silently substitutes a different model for an exact
+id** — OctoFlux never silently substitutes a different model for an exact
 request unless you've named it in an alias.
 
 ## 8. Configuring limits
@@ -227,7 +227,7 @@ event `routing_decision`) without ever logging a key value.
 
 The retry engine (`app/core/retry.py`) is **error-aware**, not a blind loop:
 
-| what happened | what OctoProxy does |
+| what happened | what OctoFlux does |
 |---|---|
 | 429 rate limited | cooldown that key, try another key/provider |
 | 401/403 | cooldown that key, try another key/provider (not the same key) |
@@ -250,7 +250,7 @@ Structured JSON, one line per event, to stdout:
 ```
 
 Key *values*, `Authorization` headers, and prompt/response bodies are never
-logged — only key *names* and sizes. Level via `OCTOPROXY_LOG_LEVEL`
+logged — only key *names* and sizes. Level via `OctoFlux_LOG_LEVEL`
 (`DEBUG`/`INFO`/`WARNING`/`ERROR`).
 
 ## 12. Usage tracking
@@ -275,10 +275,10 @@ for full functionality.
 
 ## 14. Security
 
-- **Client → OctoProxy**: `Authorization: Bearer <key>` checked against
+- **Client → OctoFlux**: `Authorization: Bearer <key>` checked against
   `server.client_keys`. Disable with `server.require_auth: false` for local
   dev only.
-- **OctoProxy → provider**: each provider's key lives only in config
+- **OctoFlux → provider**: each provider's key lives only in config
   (resolved from env) and is attached per-request; it is never returned to
   the client and never appears in logs or `/admin/*` responses (only key
   *names* do).
@@ -292,9 +292,9 @@ uvicorn app.main:app --reload --port 8000
 ```
 
 ```bash
-curl -H "Authorization: Bearer $OCTOPROXY_CLIENT_KEY" http://localhost:8000/v1/models
+curl -H "Authorization: Bearer $OctoFlux_CLIENT_KEY" http://localhost:8000/v1/models
 
-curl -H "Authorization: Bearer $OCTOPROXY_CLIENT_KEY" -H "Content-Type: application/json" \
+curl -H "Authorization: Bearer $OctoFlux_CLIENT_KEY" -H "Content-Type: application/json" \
   -X POST http://localhost:8000/v1/chat/completions \
   -d '{"model":"auto","messages":[{"role":"user","content":"hello"}]}'
 ```
@@ -307,8 +307,8 @@ curl -H "Authorization: Bearer $OCTOPROXY_CLIENT_KEY" -H "Content-Type: applicat
   not shared across workers — run one worker, or put a load balancer with
   sticky-enough routing in front if you need more throughput than one
   process provides).
-- Set `OCTOPROXY_LOG_LEVEL=INFO` and ship stdout to your log aggregator.
-- `POST /admin/reload` reloads `config/octoproxy.yaml` without restarting
+- Set `OctoFlux_LOG_LEVEL=INFO` and ship stdout to your log aggregator.
+- `POST /admin/reload` reloads `config/OctoFlux.yaml` without restarting
   and without losing live health/cooldown/usage state for targets that still
   exist — use it after editing config on disk.
 - No database, cache, or message queue is required to run this in
@@ -337,7 +337,7 @@ streaming pre-first-byte failover, and API-level auth enforcement.
 python scripts/benchmark.py --requests 500 --concurrency 20
 ```
 
-Measures OctoProxy's own routing/scheduling overhead against a mocked
+Measures OctoFlux's own routing/scheduling overhead against a mocked
 upstream (isolates gateway cost from real network/provider latency).
 
 ## What's out of scope in v1

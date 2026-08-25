@@ -3,7 +3,7 @@
 Enforces operator-declared limits (LimitsConfig) purely in-memory using
 sliding-window counters. This is *not* about respecting the upstream
 provider's own limits (we don't know those precisely) — it's about letting
-the operator say "treat this provider/key as 30 RPM" and having OctoProxy
+the operator say "treat this provider/key as 30 RPM" and having OctoFlux
 hold requests to that budget locally, proactively, before ever calling
 upstream.
 """

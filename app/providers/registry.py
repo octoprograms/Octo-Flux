@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.models.provider import OctoProxyConfig
+from app.models.provider import OctoFluxConfig
 from app.providers.openai_compatible import OpenAICompatibleProvider
 
 
@@ -8,7 +8,7 @@ class ProviderRegistry:
     """Holds one adapter instance per configured provider (built once at
     startup so each keeps its own pooled httpx.AsyncClient)."""
 
-    def __init__(self, config: OctoProxyConfig) -> None:
+    def __init__(self, config: OctoFluxConfig) -> None:
         self.config = config
         self._adapters: dict[str, OpenAICompatibleProvider] = {
             pid: OpenAICompatibleProvider(pcfg) for pid, pcfg in config.providers.items()

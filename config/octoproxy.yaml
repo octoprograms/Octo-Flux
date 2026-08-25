@@ -3,7 +3,7 @@ server:
   port: 8000
   require_auth: true
   client_keys:
-    - "${OCTOPROXY_CLIENT_KEY:-octoproxy-dev-key}"
+    - "${OctoFlux_CLIENT_KEY:-OctoFlux-dev-key}"
 
 routing:
   default_key_selection: round_robin

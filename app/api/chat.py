@@ -40,7 +40,7 @@ async def create_chat_completion(body: ChatCompletionRequest, state: AppState = 
     except ClientFacingError as err:
         return _error_response(err)
 
-    result.json_body.setdefault("id", f"octoproxy-{request_id}")
+    result.json_body.setdefault("id", f"OctoFlux-{request_id}")
     return JSONResponse(status_code=200, content=result.json_body)
 
 

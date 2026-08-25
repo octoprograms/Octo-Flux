@@ -11,7 +11,7 @@ import logging
 import sys
 import time
 
-_LOGGER_NAME = "octoproxy"
+_LOGGER_NAME = "OctoFlux"
 
 _REDACT_KEYS = {"authorization", "api_key", "key_value", "value", "secret"}
 

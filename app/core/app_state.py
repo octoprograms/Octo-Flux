@@ -6,13 +6,13 @@ from app.core.health import HealthRegistry
 from app.core.limits import LimitsRegistry
 from app.core.retry import Scheduler
 from app.core.usage import UsageRegistry
-from app.models.provider import OctoProxyConfig
+from app.models.provider import OctoFluxConfig
 from app.providers.registry import ProviderRegistry
 
 
 @dataclass
 class AppState:
-    config: OctoProxyConfig
+    config: OctoFluxConfig
     providers: ProviderRegistry
     health: HealthRegistry
     limits: LimitsRegistry
@@ -20,7 +20,7 @@ class AppState:
     scheduler: Scheduler
 
     @classmethod
-    def build(cls, config: OctoProxyConfig) -> "AppState":
+    def build(cls, config: OctoFluxConfig) -> "AppState":
         providers = ProviderRegistry(config)
         health = HealthRegistry()
         limits = LimitsRegistry()
@@ -28,7 +28,7 @@ class AppState:
         scheduler = Scheduler(config, providers, health, limits, usage)
         return cls(config=config, providers=providers, health=health, limits=limits, usage=usage, scheduler=scheduler)
 
-    def replace_config(self, new_config: OctoProxyConfig) -> "AppState":
+    def replace_config(self, new_config: OctoFluxConfig) -> "AppState":
         """Used by /admin/reload: rebuild provider adapters/config but keep
         the existing health/limits/usage registries so live state (cooldowns,
         counters) survives for targets that still exist."""

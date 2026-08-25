@@ -5,7 +5,7 @@ import os
 import pytest
 
 from app.core.config import ConfigError, load_config, load_yaml_text
-from app.models.provider import OctoProxyConfig
+from app.models.provider import OctoFluxConfig
 from tests.conftest import make_config
 
 
@@ -136,4 +136,4 @@ def test_invalid_limit_rejected():
 
 def test_missing_config_file_raises():
     with pytest.raises(ConfigError):
-        load_config("/nonexistent/path/octoproxy.yaml")
+        load_config("/nonexistent/path/OctoFlux.yaml")

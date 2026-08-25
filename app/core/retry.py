@@ -27,7 +27,7 @@ from app.core.health import HealthRegistry
 from app.core.limits import LimitsRegistry
 from app.core.router import Candidate, Router
 from app.core.usage import UsageRegistry
-from app.models.provider import OctoProxyConfig
+from app.models.provider import OctoFluxConfig
 from app.observability.logging import log_event
 from app.providers.base import UpstreamFailure, UpstreamSuccess
 from app.providers.registry import ProviderRegistry
@@ -72,7 +72,7 @@ def _backoff_seconds(attempt: int, base_ms: int, max_ms: int, jitter_ms: int) ->
 class Scheduler:
     def __init__(
         self,
-        config: OctoProxyConfig,
+        config: OctoFluxConfig,
         providers: ProviderRegistry,
         health: HealthRegistry,
         limits: LimitsRegistry,

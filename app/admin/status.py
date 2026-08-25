@@ -83,7 +83,7 @@ async def admin_reload(request: Request, state: AppState = Depends(get_state)) -
 
     old_providers = state.providers
     new_state = state.replace_config(new_config)
-    request.app.state.octoproxy = new_state
+    request.app.state.OctoFlux = new_state
     await old_providers.aclose()
 
     log_event("config_reloaded", providers=list(new_config.providers.keys()))

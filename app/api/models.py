@@ -12,12 +12,12 @@ router = APIRouter()
 @router.get("/v1/models", response_model=ModelListResponse, dependencies=[Depends(require_client_auth)])
 async def list_models(state: AppState = Depends(get_state)) -> ModelListResponse:
     seen: set[str] = set()
-    models: list[ModelInfo] = [ModelInfo(id="auto", owned_by="octoproxy")]
+    models: list[ModelInfo] = [ModelInfo(id="auto", owned_by="OctoFlux")]
     seen.add("auto")
 
     for alias in state.config.aliases:
         if alias not in seen:
-            models.append(ModelInfo(id=alias, owned_by="octoproxy-alias"))
+            models.append(ModelInfo(id=alias, owned_by="OctoFlux-alias"))
             seen.add(alias)
 
     for provider in state.config.enabled_providers().values():

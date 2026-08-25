@@ -16,7 +16,7 @@ from itertools import count
 from app.core.health import HealthRegistry
 from app.core.limits import LimitsRegistry
 from app.core.usage import UsageRegistry
-from app.models.provider import KeyConfig, OctoProxyConfig, ProviderConfig
+from app.models.provider import KeyConfig, OctoFluxConfig, ProviderConfig
 
 
 @dataclass
@@ -50,7 +50,7 @@ class _RoundRobinCursor:
 
 
 class Router:
-    def __init__(self, config: OctoProxyConfig, health: HealthRegistry, limits: LimitsRegistry, usage: UsageRegistry) -> None:
+    def __init__(self, config: OctoFluxConfig, health: HealthRegistry, limits: LimitsRegistry, usage: UsageRegistry) -> None:
         self.config = config
         self.health = health
         self.limits = limits

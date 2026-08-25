@@ -2,7 +2,7 @@
 
 We deliberately keep this permissive: unknown/extra fields are passed through
 to the upstream provider untouched rather than stripped, since providers vary
-in what they accept. We only validate the fields OctoProxy itself needs to
+in what they accept. We only validate the fields OctoFlux itself needs to
 make routing decisions (model, stream).
 """
 from __future__ import annotations
@@ -41,7 +41,7 @@ class ErrorResponse(BaseModel):
 class ModelInfo(BaseModel):
     id: str
     object: str = "model"
-    owned_by: str = "octoproxy"
+    owned_by: str = "OctoFlux"
 
 
 class ModelListResponse(BaseModel):

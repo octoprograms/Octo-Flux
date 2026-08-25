@@ -1,5 +1,5 @@
 # Reference examples for adding providers. Copy relevant blocks into
-# config/octoproxy.yaml under `providers:` — this file is not loaded
+# config/OctoFlux.yaml under `providers:` — this file is not loaded
 # automatically.
 #
 # Limits below are transcribed from each provider's published docs (see
@@ -13,7 +13,7 @@ providers:
   # --- Groq -----------------------------------------------------------
   # RPM/RPD/TPM/TPD are org-level (shared across all keys), Developer plan.
   # Cached tokens do not count. 429 responses include `retry-after` (sec);
-  # OctoProxy already honors that header automatically (see
+  # OctoFlux already honors that header automatically (see
   # app/core/errors.py parse_retry_after) instead of the cooldown below.
   groq:
     enabled: true
@@ -33,11 +33,11 @@ providers:
       - { id: openai/gpt-oss-20b, enabled: true, priority: 40 }
       - { id: qwen/qwen3.6-27b, enabled: true, priority: 50 }
       - { id: groq/compound, enabled: false, priority: 60 }
-    # NOTE: limits here apply per-provider in OctoProxy's local enforcement.
+    # NOTE: limits here apply per-provider in OctoFlux's local enforcement.
     # Because Groq's limits are genuinely per-model (see per-model table
     # below), prefer setting per-model budgets via aliases/priority rather
     # than one provider-wide number if you route across several Groq models
-    # heavily — OctoProxy enforces at provider+key granularity, not per
+    # heavily — OctoFlux enforces at provider+key granularity, not per
     # model, in v1 (see ARCHITECTURE.md non-goals).
     limits:
       requests_per_minute: 30       # matches the tightest common model RPM
@@ -61,7 +61,7 @@ providers:
   # --- NVIDIA NIM -----------------------------------------------------
   # NVIDIA does not publish a single documented RPM figure the way Groq
   # does; 40 RPM here is a conservative, self-imposed local ceiling — treat
-  # OctoProxy's local limiter as the actual guardrail, not a quoted vendor
+  # OctoFlux's local limiter as the actual guardrail, not a quoted vendor
   # number.
   nvidia_nim:
     enabled: false
@@ -92,10 +92,10 @@ providers:
   #      OpenRouter routed to is rate-limiting (OpenRouter automatically
   #      retries other providers/fallback models for you before the error
   #      reaches you). A 429 always carries `Retry-After` when a retry hint
-  #      is available; OctoProxy already honors it.
+  #      is available; OctoFlux already honors it.
   # The requests_per_minute below is therefore only meaningful if you are
   # deliberately using ":free" model variants — set it to 20 in that case,
-  # or omit local RPM entirely for paid models and rely on OctoProxy's
+  # or omit local RPM entirely for paid models and rely on OctoFlux's
   # error-aware failover for the occasional upstream 429/402.
   openrouter:
     enabled: false
@@ -112,7 +112,7 @@ providers:
       - { id: meta-llama/llama-3.3-70b-instruct:free, enabled: false, priority: 20 }
     headers:
       HTTP-Referer: "https://octoprograms.example"
-      X-Title: "OctoProxy"
+      X-Title: "OctoFlux"
     limits:
       requests_per_minute: 20   # only binding for ":free" variants; see note above
     retry: { max_attempts: 3 }

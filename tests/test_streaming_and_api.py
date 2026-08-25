@@ -13,7 +13,7 @@ def _client_for(app_state: AppState) -> TestClient:
     from app.main import create_app
 
     app = create_app()
-    app.state.octoproxy = app_state  # bypass lifespan's own config load
+    app.state.OctoFlux = app_state  # bypass lifespan's own config load
     return TestClient(app)
 
 

@@ -8,7 +8,7 @@ from app.core.app_state import AppState
 
 
 def get_state(request: Request) -> AppState:
-    return request.app.state.octoproxy
+    return request.app.state.OctoFlux
 
 
 def require_client_auth(request: Request, state: AppState = Depends(get_state)) -> None:
@@ -17,7 +17,7 @@ def require_client_auth(request: Request, state: AppState = Depends(get_state)) 
     auth_header = request.headers.get("authorization", "")
     token = auth_header.removeprefix("Bearer ").strip() if auth_header.startswith("Bearer ") else None
     if not token or token not in state.config.server.client_keys:
-        raise HTTPException(status_code=401, detail={"error": {"message": "Invalid or missing OctoProxy API key.", "type": "authentication_error"}})
+        raise HTTPException(status_code=401, detail={"error": {"message": "Invalid or missing OctoFlux API key.", "type": "authentication_error"}})
 
 
 def new_request_id() -> str:

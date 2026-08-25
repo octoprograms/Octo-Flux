@@ -14,7 +14,7 @@ from app.observability.logging import configure_logging, log_event
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    configure_logging(os.environ.get("OCTOPROXY_LOG_LEVEL", "INFO"))
+    configure_logging(os.environ.get("OctoFlux_LOG_LEVEL", "INFO"))
     try:
         config = load_config_from_env()
     except ConfigError as exc:
@@ -22,15 +22,15 @@ async def lifespan(app: FastAPI):
         log_event("startup_config_error", level="error", error=str(exc))
         raise SystemExit(str(exc)) from exc
 
-    app.state.octoproxy = AppState.build(config)
+    app.state.OctoFlux = AppState.build(config)
     log_event("startup", providers=list(config.enabled_providers().keys()))
     yield
-    await app.state.octoproxy.providers.aclose()
+    await app.state.OctoFlux.providers.aclose()
     log_event("shutdown")
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="OctoProxy", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="OctoFlux", version="0.1.0", lifespan=lifespan)
     app.include_router(models.router)
     app.include_router(chat.router)
     app.include_router(responses.router)

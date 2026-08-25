@@ -14,7 +14,7 @@ from pathlib import Path
 import yaml
 from pydantic import ValidationError
 
-from app.models.provider import OctoProxyConfig
+from app.models.provider import OctoFluxConfig
 
 _ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(:-([^}]*))?\}")
 
@@ -59,7 +59,7 @@ def load_yaml_text(text: str) -> dict:
     return raw
 
 
-def load_config(path: str | Path) -> OctoProxyConfig:
+def load_config(path: str | Path) -> OctoFluxConfig:
     p = Path(path)
     if not p.exists():
         raise ConfigError(f"configuration file not found: {p}")
@@ -74,7 +74,7 @@ def load_config(path: str | Path) -> OctoProxyConfig:
             value["id"] = key
 
     try:
-        return OctoProxyConfig.model_validate(resolved)
+        return OctoFluxConfig.model_validate(resolved)
     except ValidationError as exc:
         raise ConfigError(_format_validation_error(exc)) from exc
 
@@ -87,6 +87,6 @@ def _format_validation_error(exc: ValidationError) -> str:
     return "\n".join(lines)
 
 
-def load_config_from_env(default_path: str = "config/octoproxy.yaml") -> OctoProxyConfig:
-    path = os.environ.get("OCTOPROXY_CONFIG", default_path)
+def load_config_from_env(default_path: str = "config/OctoFlux.yaml") -> OctoFluxConfig:
+    path = os.environ.get("OctoFlux_CONFIG", default_path)
     return load_config(path)

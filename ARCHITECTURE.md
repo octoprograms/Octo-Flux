@@ -1,11 +1,11 @@
-# OctoProxy — Architecture Decision Record
+# OctoFlux — Architecture Decision Record
 
 ## Problem
 
 OctoPrograms uses several OpenAI-compatible inference providers (Groq, NVIDIA NIM,
 OpenRouter, and others in the future). Each has its own keys, rate limits, and
 failure modes. Applications calling these providers directly are fragile: a single
-rate-limited key or a single flaky provider breaks the app. OctoProxy sits between
+rate-limited key or a single flaky provider breaks the app. OctoFlux sits between
 applications and providers as a thin, OpenAI-compatible gateway that picks a
 healthy provider/model/key for every request and fails over intelligently when
 something goes wrong.
@@ -61,7 +61,7 @@ something goes wrong.
 ## Architecture
 
 ```
-Client → FastAPI app → auth (OctoProxy key) → Router → Scheduler/Retry engine
+Client → FastAPI app → auth (OctoFlux key) → Router → Scheduler/Retry engine
                                                      → OpenAICompatibleProvider (httpx)
                                                      → Error classifier
                                                      → Health/Limits/Usage (runtime state)
@@ -171,9 +171,9 @@ behavior needs it to survive a process restart.
 
 Two independent credential domains:
 
-- **Client → OctoProxy:** `Authorization: Bearer <OCTOPROXY_KEY>` checked in
+- **Client → OctoFlux:** `Authorization: Bearer <OctoFlux_KEY>` checked in
   `app/api/deps.py`. Multiple client keys supported (`server.client_keys`).
-- **OctoProxy → upstream provider:** each provider key lives only in config
+- **OctoFlux → upstream provider:** each provider key lives only in config
   (resolved from env), attached to the outbound request in
   `OpenAICompatibleProvider`, and is referenced everywhere else (logs, admin
   status, error messages) by its configured `name`, never its value.

@@ -69,7 +69,7 @@ async def create_response(body: ResponsesRequest, state: AppState = Depends(get_
     return JSONResponse(
         status_code=200,
         content={
-            "id": f"octoproxy-{request_id}",
+            "id": f"OctoFlux-{request_id}",
             "object": "response",
             "model": result.model_id,
             "output_text": output_text,

@@ -1,7 +1,7 @@
-"""Quick, dependency-light benchmark of OctoProxy's own overhead.
+"""Quick, dependency-light benchmark of OctoFlux's own overhead.
 
 Measures request/sec and latency for the routing+scheduling hot path with a
-mocked upstream (so results reflect OctoProxy's overhead, not real network
+mocked upstream (so results reflect OctoFlux's overhead, not real network
 latency to a provider). Run:
 
     python scripts/benchmark.py [--requests 500] [--concurrency 20]

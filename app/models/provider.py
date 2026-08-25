@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class LimitsConfig(BaseModel):
-    """Local rate limits OctoProxy enforces itself (not upstream's limits)."""
+    """Local rate limits OctoFlux enforces itself (not upstream's limits)."""
 
     requests_per_second: float | None = Field(default=None, gt=0)
     requests_per_minute: int | None = Field(default=None, gt=0)
@@ -133,14 +133,14 @@ class RoutingConfig(BaseModel):
     allow_provider_fallback: bool = True
 
 
-class OctoProxyConfig(BaseModel):
+class OctoFluxConfig(BaseModel):
     server: ServerConfig = Field(default_factory=ServerConfig)
     routing: RoutingConfig = Field(default_factory=RoutingConfig)
     providers: dict[str, ProviderConfig] = Field(default_factory=dict)
     aliases: dict[str, list[AliasTarget]] = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def provider_keys_match_ids_and_are_unique(self) -> "OctoProxyConfig":
+    def provider_keys_match_ids_and_are_unique(self) -> "OctoFluxConfig":
         for key, provider in self.providers.items():
             if key != provider.id:
                 raise ValueError(

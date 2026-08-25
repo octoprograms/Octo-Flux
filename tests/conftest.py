@@ -7,19 +7,19 @@ import pytest
 
 from app.core.app_state import AppState
 from app.core.config import _resolve_env_recursive, load_config, load_yaml_text
-from app.models.provider import OctoProxyConfig
+from app.models.provider import OctoFluxConfig
 
 
-def make_config(yaml_text: str) -> OctoProxyConfig:
+def make_config(yaml_text: str) -> OctoFluxConfig:
     raw = load_yaml_text(textwrap.dedent(yaml_text))
     resolved = _resolve_env_recursive(raw)
     for pid, pval in (resolved.get("providers") or {}).items():
         pval.setdefault("id", pid)
-    return OctoProxyConfig.model_validate(resolved)
+    return OctoFluxConfig.model_validate(resolved)
 
 
 @pytest.fixture
-def two_provider_config() -> OctoProxyConfig:
+def two_provider_config() -> OctoFluxConfig:
     return make_config(
         """
         server:
