@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, Request
 from app.api.deps import get_state, require_client_auth
 from app.core.app_state import AppState
 from app.core.config import ConfigError, load_config_from_env
+from app.core.provider_checks import mask_api_key
 from app.observability.logging import log_event
 
 router = APIRouter()
@@ -12,7 +13,25 @@ router = APIRouter()
 
 @router.get("/health")
 async def health(state: AppState = Depends(get_state)) -> dict:
-    return {"status": "ok", "providers_configured": len(state.config.enabled_providers())}
+    providers = {}
+    for pid, provider in state.config.enabled_providers().items():
+        keys = {}
+        for key in provider.keys:
+            if not key.enabled:
+                continue
+            check = state.health.key(pid, key.name)
+            keys[key.name] = {
+                "key_hint": mask_api_key(key.value),
+                "status": "working" if check.last_check_ok else "unhealthy" if check.last_check_ok is False else "unknown",
+                "last_check_at": check.last_check_at,
+                "last_check_latency_ms": check.last_check_latency_ms,
+                "reason": check.last_check_reason,
+            }
+        providers[pid] = {
+            "status": "working" if any(item["status"] == "working" for item in keys.values()) else "unhealthy" if keys and all(item["status"] == "unhealthy" for item in keys.values()) else "unknown",
+            "keys": keys,
+        }
+    return {"status": "ok", "providers_configured": len(providers), "providers": providers}
 
 
 @router.get("/admin/status", dependencies=[Depends(require_client_auth)])
@@ -27,6 +46,13 @@ async def admin_status(state: AppState = Depends(get_state)) -> dict:
                 "status": kh.status(provider.health.failure_threshold).value,
                 "consecutive_failures": kh.consecutive_failures,
                 "seconds_until_available": round(kh.seconds_until_available(), 1),
+                "health_check": {
+                    "status": "working" if kh.last_check_ok else "unhealthy" if kh.last_check_ok is False else "unknown",
+                    "key_hint": mask_api_key(key.value),
+                    "last_check_at": kh.last_check_at,
+                    "last_check_latency_ms": kh.last_check_latency_ms,
+                    "reason": kh.last_check_reason,
+                },
             }
         providers_status[pid] = {
             "enabled": provider.enabled,
@@ -84,6 +110,8 @@ async def admin_reload(request: Request, state: AppState = Depends(get_state)) -
     old_providers = state.providers
     new_state = state.replace_config(new_config)
     request.app.state.OctoFlux = new_state
+    new_state.health_monitor.start()
+    await state.health_monitor.stop()
     await old_providers.aclose()
 
     log_event("config_reloaded", providers=list(new_config.providers.keys()))

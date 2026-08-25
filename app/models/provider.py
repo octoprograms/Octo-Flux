@@ -40,6 +40,7 @@ class HealthConfig(BaseModel):
     cooldown_seconds: int = Field(default=30, ge=1)
     # Long cooldown applied for quota_exceeded / daily-limit style errors.
     long_cooldown_seconds: int = Field(default=300, ge=1)
+    check_interval_seconds: int = Field(default=43200, ge=300)
 
 
 class KeyConfig(BaseModel):

@@ -72,10 +72,10 @@ providers:
       - id: z-ai/glm-5.2:free
         enabled: true
         priority: 20
-      - id: z-ai/glm-5.2:free
+      - id: nvidia/nemotron-3-ultra-550b-a55b:free
         enabled: true
         priority: 30
-      - id: nvidia/nemotron-3-ultra-550b-a55b:free
+      - id: google/gemma-4-26b-a4b-it:free
         enabled: true
         priority: 40
 

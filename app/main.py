@@ -24,7 +24,9 @@ async def lifespan(app: FastAPI):
 
     app.state.OctoFlux = AppState.build(config)
     log_event("startup", providers=list(config.enabled_providers().keys()))
+    app.state.OctoFlux.health_monitor.start()
     yield
+    await app.state.OctoFlux.health_monitor.stop()
     await app.state.OctoFlux.providers.aclose()
     log_event("shutdown")
 

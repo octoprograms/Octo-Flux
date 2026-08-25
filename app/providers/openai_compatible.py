@@ -95,6 +95,29 @@ class OpenAICompatibleProvider:
     async def list_models(self) -> list[str]:
         return [m.id for m in self.config.models if m.enabled]
 
+    async def health_check(self, *, api_key: str) -> UpstreamSuccess | UpstreamFailure:
+        start = time.perf_counter()
+        headers = _build_headers(self.config.authentication, api_key, self.config.headers)
+        try:
+            resp = await self._client.get("/models", headers=headers)
+        except Exception as exc:
+            return UpstreamFailure(
+                status_code=None,
+                body_text=str(exc),
+                latency_ms=(time.perf_counter() - start) * 1000,
+                exception=exc,
+            )
+
+        latency_ms = (time.perf_counter() - start) * 1000
+        if resp.status_code >= 400:
+            return UpstreamFailure(
+                status_code=resp.status_code,
+                body_text=resp.text,
+                latency_ms=latency_ms,
+                headers=resp.headers,
+            )
+        return UpstreamSuccess(status_code=resp.status_code, json_body={}, latency_ms=latency_ms)
+
     async def aclose(self) -> None:
         await self._client.aclose()
 

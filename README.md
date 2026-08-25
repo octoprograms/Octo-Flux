@@ -223,6 +223,12 @@ Deterministic pipeline (see `app/core/router.py`):
 every routing decision is logged with its reason (`app/observability/logging.py`
 event `routing_decision`) without ever logging a key value.
 
+`GET /health` also reports the last background `/models` probe for every
+enabled provider key. Probes run concurrently at the shortest configured
+`health.check_interval_seconds` (default 43,200 seconds / 12 hours), and show provider/key,
+working status, latency, and a masked key hint. Terminal logs emit
+`provider_health_check` events without exposing key values.
+
 ## 10. Failover
 
 The retry engine (`app/core/retry.py`) is **error-aware**, not a blind loop:

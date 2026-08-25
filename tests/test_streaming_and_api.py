@@ -51,6 +51,18 @@ def test_health_endpoint(app_state: AppState):
     resp = client.get("/health")
     assert resp.status_code == 200
     assert resp.json()["status"] == "ok"
+    assert resp.json()["providers"]["alpha"]["keys"]["alpha-key-1"]["status"] == "unknown"
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_background_provider_check_records_working_key(app_state: AppState):
+    route = respx.get("http://alpha.test/v1/models").mock(return_value=httpx.Response(200, json={"data": []}))
+    await app_state.health_monitor.check_once()
+
+    assert route.call_count == 2
+    assert app_state.health.key("alpha", "alpha-key-1").last_check_ok is True
+    assert app_state.health.key("alpha", "alpha-key-2").last_check_ok is True
 
 
 def test_auth_required_when_configured(two_provider_config):
