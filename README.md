@@ -86,6 +86,9 @@ OctoFlux/
 │   └── providers.example.yaml  # reference blocks for more providers
 ├── tests/                      # 67 tests, mocked upstreams via respx (no real network)
 ├── scripts/benchmark.py        # routing/scheduling overhead benchmark
+├── Dockerfile                  # production container image
+├── docker-compose.yml          # production Compose service
+├── .dockerignore
 ├── ARCHITECTURE.md             # design rationale (read this first)
 ├── pyproject.toml
 └── .env.example
@@ -106,7 +109,50 @@ chmod +x run.sh
 ./run.sh
 ```
 
-## 4. Configuration
+## 4. Production Docker deployment
+
+Docker runs OctoFlux without a virtual environment inside the container. The
+image uses Python 3.12, runs as the unprivileged `octoflux` user, and starts
+Uvicorn without development reload mode.
+
+Create the environment file from the example and set the client and provider
+keys. Do not copy `.env` into the image or commit it:
+
+```bash
+cp .env.example .env
+# edit .env and set OctoFlux_CLIENT_KEY and provider API keys
+```
+
+Build and start the production service with Docker Compose:
+
+```bash
+docker compose up -d --build
+docker compose ps
+docker compose logs -f octoflux
+```
+
+The API is available at `http://localhost:8000`. The container health check
+calls `GET /health` every 30 seconds:
+
+```bash
+curl http://localhost:8000/health
+```
+
+To stop the service:
+
+```bash
+docker compose down
+```
+
+Alternatively, build and run the image directly:
+
+```bash
+docker build -t octoflux:latest .
+docker run -d --name octoflux --restart unless-stopped \
+  --env-file .env -p 8000:8000 octoflux:latest
+```
+
+## 5. Configuration
 
 Everything lives in `config/OctoFlux.yaml` (path overridable via
 `OctoFlux_CONFIG`). Secrets are never written to YAML directly — reference
@@ -121,7 +167,7 @@ Startup **fails fast** with a specific message on invalid config — duplicate
 provider/model/key ids, malformed `base_url`, out-of-range limits, a provider
 with no enabled keys or models, an alias pointing at an unknown provider.
 
-## 5. Adding a provider
+## 6. Adding a provider
 
 No source changes needed — copy a block into `providers:`:
 
@@ -154,7 +200,7 @@ More examples (NVIDIA NIM, OpenRouter, a bare-bones template) are in
 `authentication: {type: header, header: "X-Api-Key"}` or add arbitrary
 `headers:` — still pure config.
 
-## 6. Adding API keys
+## 7. Adding API keys
 
 Add entries under a provider's `keys:` list. Each key gets independent
 runtime health, cooldown, and (optionally) its own `limits:` override — so
@@ -170,7 +216,7 @@ keys:
     value: "${KEY_2}"
 ```
 
-## 7. Adding models
+## 8. Adding models
 
 Add entries under a provider's `models:` list; `priority` controls fallback
 order within that provider (lower tried first). To let a request fall back
@@ -191,7 +237,7 @@ exact model id only ever fails over across **providers offering that same
 id** — OctoFlux never silently substitutes a different model for an exact
 request unless you've named it in an alias.
 
-## 8. Configuring limits
+## 9. Configuring limits
 
 Limits are enforced **locally**, before ever calling upstream — useful
 because provider limits are often undocumented or account-specific. Set
@@ -212,7 +258,7 @@ limits:
 Any field left unset is unbounded. Windows are independent sliding windows
 (hitting RPD blocks even with RPM headroom).
 
-## 9. Routing
+## 10. Routing
 
 Deterministic pipeline (see `app/core/router.py`):
 
@@ -233,7 +279,7 @@ enabled provider key. Probes run concurrently at the shortest configured
 working status, latency, and a masked key hint. Terminal logs emit
 `provider_health_check` events without exposing key values.
 
-## 10. Failover
+## 11. Failover
 
 The retry engine (`app/core/retry.py`) is **error-aware**, not a blind loop:
 
@@ -249,7 +295,7 @@ The retry engine (`app/core/retry.py`) is **error-aware**, not a blind loop:
 Bounded by `routing.max_total_attempts` (default 4) and never retries the
 exact same `(provider, model, key)` twice for one inbound request.
 
-## 11. Logging
+## 12. Logging
 
 Structured JSON, one line per event, to stdout:
 
@@ -263,14 +309,14 @@ Key *values*, `Authorization` headers, and prompt/response bodies are never
 logged — only key *names* and sizes. Level via `OctoFlux_LOG_LEVEL`
 (`DEBUG`/`INFO`/`WARNING`/`ERROR`).
 
-## 12. Usage tracking
+## 13. Usage tracking
 
 In-memory counters, no database required: requests, success/failure,
 input/output tokens, average latency, rate-limit events, fallback count —
 broken down globally and per provider/model/key. See `GET /admin/usage` or
 `GET /metrics`.
 
-## 13. Streaming
+## 14. Streaming
 
 `stream: true` proxies the upstream SSE stream chunk-by-chunk (never
 buffered in full). Failover only happens **before the first byte** reaches
@@ -283,7 +329,7 @@ routing/failover), not a full implementation of OpenAI's Responses API — no
 server-side conversation state or built-in tools. Use `/v1/chat/completions`
 for full functionality.
 
-## 14. Security
+## 15. Security
 
 - **Client → OctoFlux**: `Authorization: Bearer <key>` checked against
   `server.client_keys`. Disable with `server.require_auth: false` for local
@@ -294,7 +340,7 @@ for full functionality.
   *names* do).
 - Admin endpoints require the same client auth.
 
-## 15. Running locally
+## 16. Running locally
 
 ```bash
 export $(cat .env | xargs)   # or your preferred env loader
@@ -309,7 +355,7 @@ curl -H "Authorization: Bearer $OctoFlux_CLIENT_KEY" -H "Content-Type: applicati
   -d '{"model":"auto","messages":[{"role":"user","content":"hello"}]}'
 ```
 
-## 16. Running in production
+## 17. Running in production
 
 - Run behind a process manager (systemd, supervisord) or container; a single
   `uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1` process is
