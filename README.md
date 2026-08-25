@@ -100,6 +100,10 @@ git clone <this repo> OctoFlux && cd OctoFlux
 pip install -e ".[dev]"       # or: pip install fastapi "uvicorn[standard]" httpx pydantic pyyaml
 cp .env.example .env
 # edit .env: set OctoFlux_CLIENT_KEY and at least one provider's API key
+
+# Linux/macOS: creates and initializes .venv on first run
+chmod +x run.sh
+./run.sh
 ```
 
 ## 4. Configuration
