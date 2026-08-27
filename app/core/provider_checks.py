@@ -57,6 +57,7 @@ class ProviderHealthMonitor:
         else:
             ok = False
             reason = _failure_reason(result)
+        model_ids = result.json_body.get("model_ids") if isinstance(result, UpstreamSuccess) else None
 
         self.health.record_check(
             provider_id,
@@ -64,6 +65,7 @@ class ProviderHealthMonitor:
             ok=ok,
             reason=reason,
             latency_ms=result.latency_ms,
+            model_ids=model_ids,
         )
         log_event(
             "provider_health_check",

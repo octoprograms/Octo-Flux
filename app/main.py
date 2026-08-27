@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.admin import status as admin_status
+from app.admin import ui as admin_ui
 from app.api import chat, models, responses
 from app.core.app_state import AppState
 from app.core.config import ConfigError, load_config_from_env
@@ -33,6 +34,7 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     app = FastAPI(title="OctoFlux", version="0.1.0", lifespan=lifespan)
+    app.include_router(admin_ui.router)
     app.include_router(models.router)
     app.include_router(chat.router)
     app.include_router(responses.router)

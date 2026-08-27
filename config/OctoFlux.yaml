@@ -66,16 +66,16 @@ providers:
         value: "${OPENROUTER_API_KEY_3}"
 
     models:
-      - id: stealth/ox-alpha
-        enabled: true
-        priority: 10
       - id: z-ai/glm-5.2:free
         enabled: true
+        priority: 10
+      - id: minimax/minimax-m3:free
+        enabled: true
         priority: 20
-      - id: nvidia/nemotron-3-ultra-550b-a55b:free
+      - id: thinkingmachines/inkling:free
         enabled: true
         priority: 30
-      - id: google/gemma-4-26b-a4b-it:free
+      - id: nvidia/nemotron-3-ultra-550b-a55b:free
         enabled: true
         priority: 40
 

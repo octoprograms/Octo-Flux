@@ -12,7 +12,8 @@ something goes wrong.
 
 ## Goals
 
-- OpenAI-compatible surface (`/v1/chat/completions`, `/v1/models`, streaming).
+- OpenAI-compatible surface (`/v1/chat/completions`, `/v1/models`, streaming),
+  plus alias inspection through `/v1/aliases`.
 - Provider, model, and key are pure configuration — no source changes to add one.
 - Deterministic, explainable routing (provider → model → key) with priority,
   rotation, health, cooldown, and local rate limits.
@@ -152,6 +153,27 @@ No background polling traffic is generated; cooldown expiry is checked lazily
 when a candidate is considered. This avoids "excessive background traffic"
 while still self-healing.
 
+The on-demand admin key test and background health monitor call the provider's
+`GET /models` endpoint. A successful HTTP response proves provider reachability
+and key acceptance, but is not a model completion test. The adapter preserves
+the returned model IDs, and `POST /admin/providers/{provider_id}/keys/{key_name}/test`
+compares them with the provider's enabled configured model IDs and returns a
+per-model `available` boolean. OpenRouter and Groq IDs are compared directly.
+NVIDIA NIM returns bare names, so the comparison also strips the configured
+publisher prefix (for example, `nvidia/foo` matches `foo`).
+
+Model availability is therefore a snapshot: a model may be listed and still
+be unavailable for a completion because of upstream routing, permissions,
+quota, or rate limits. The chat scheduler remains the final authority and
+classifies actual completion failures such as `model_not_found` and
+`rate_limited`.
+
+The dashboard's **Reload configuration** action calls `POST /admin/reload`
+after operator confirmation. A successful reload swaps the parsed config and
+provider adapters while preserving compatible runtime health, cooldown, and
+usage state. If parsing fails, the endpoint returns an error and leaves the
+active configuration unchanged.
+
 ## Configuration model
 
 YAML, environment-variable interpolation (`${VAR}` / `${VAR:-default}`),
@@ -179,7 +201,12 @@ Two independent credential domains:
   status, error messages) by its configured `name`, never its value.
 
 Admin endpoints (`/admin/*`) require the same client-key auth by default and
-never render key values.
+never render key values. The static operator dashboard is served at `/admin`
+and uses that same client key from the browser session to call the protected
+admin endpoints; it does not introduce a second identity or password store.
+Deployments should put the dashboard behind HTTPS and restrict access to
+trusted operators because the client key authorizes both admin and gateway
+requests.
 
 ## Performance considerations
 

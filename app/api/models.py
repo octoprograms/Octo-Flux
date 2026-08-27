@@ -27,3 +27,23 @@ async def list_models(state: AppState = Depends(get_state)) -> ModelListResponse
                 seen.add(m.id)
 
     return ModelListResponse(data=models)
+
+
+@router.get("/v1/aliases", dependencies=[Depends(require_client_auth)])
+async def list_aliases(state: AppState = Depends(get_state)) -> dict:
+    """Expose configured aliases and their ordered provider/model targets."""
+    aliases = {}
+    for alias, targets in state.config.aliases.items():
+        aliases[alias] = [
+            {
+                "provider": target.provider,
+                "model": target.model,
+                "enabled": state.config.providers[target.provider].enabled
+                and any(
+                    model.id == target.model and model.enabled
+                    for model in state.config.providers[target.provider].models
+                ),
+            }
+            for target in targets
+        ]
+    return {"object": "list", "data": aliases}

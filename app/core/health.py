@@ -31,12 +31,16 @@ class HealthState:
     last_check_ok: bool | None = None
     last_check_reason: str | None = None
     last_check_latency_ms: float | None = None
+    last_check_model_ids: list[str] | None = None
 
-    def record_check(self, ok: bool, reason: str | None, latency_ms: float) -> None:
+    def record_check(
+        self, ok: bool, reason: str | None, latency_ms: float, model_ids: list[str] | None = None
+    ) -> None:
         self.last_check_at = time.time()
         self.last_check_ok = ok
         self.last_check_reason = reason
         self.last_check_latency_ms = round(latency_ms, 1)
+        self.last_check_model_ids = model_ids
 
     def record_failure(self, reason: str, cooldown_seconds: float, failure_threshold: int) -> None:
         self.consecutive_failures += 1
@@ -93,8 +97,9 @@ class HealthRegistry:
         ok: bool,
         reason: str | None,
         latency_ms: float,
+        model_ids: list[str] | None = None,
     ) -> None:
-        self.key(provider_id, key_name).record_check(ok, reason, latency_ms)
+        self.key(provider_id, key_name).record_check(ok, reason, latency_ms, model_ids)
         provider = self.provider(provider_id)
         provider.last_check_at = time.time()
         provider.last_check_ok = ok if provider.last_check_ok is None else provider.last_check_ok or ok
@@ -113,6 +118,7 @@ class HealthRegistry:
                     "last_check_ok": h.last_check_ok,
                     "last_check_reason": h.last_check_reason,
                     "last_check_latency_ms": h.last_check_latency_ms,
+                    "last_check_model_ids": h.last_check_model_ids,
                 }
                 for pid, h in self._provider_health.items()
             },
@@ -126,6 +132,7 @@ class HealthRegistry:
                     "last_check_ok": h.last_check_ok,
                     "last_check_reason": h.last_check_reason,
                     "last_check_latency_ms": h.last_check_latency_ms,
+                    "last_check_model_ids": h.last_check_model_ids,
                 }
                 for (pid, kname), h in self._key_health.items()
             },

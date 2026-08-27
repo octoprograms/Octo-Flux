@@ -1,239 +1,468 @@
 # OctoFlux
 
-A small, fast, OpenAI-compatible LLM gateway. It sits between your
-application and multiple OpenAI-compatible providers (Groq, OpenRouter,
-NVIDIA NIM, or anything else that speaks `/v1/chat/completions`) and keeps
-requests alive by rotating keys, rotating models, and failing over between
-providers when something goes wrong — without you writing any retry code in
-your application.
+**OpenAI-compatible LLM gateway with intelligent routing, key rotation, rate limiting, health checks, and provider failover.**
 
-Point an OpenAI SDK at OctoFlux and it works without knowing which upstream
-provider actually served the request:
+OctoFlux sits between your application and multiple OpenAI-compatible LLM providers. It handles provider selection, API-key rotation, local rate limiting, health tracking, retries, and failover so your application doesn't have to.
+
+Point any OpenAI-compatible SDK at OctoFlux and let the gateway decide where each request should go.
 
 ```python
 from openai import OpenAI
 
-client = OpenAI(base_url="http://localhost:8000/v1", api_key="OctoFlux-dev-key")
+client = OpenAI(
+    base_url="http://localhost:8000/v1",
+    api_key="OctoFlux-dev-key",
+)
 
 response = client.chat.completions.create(
-    model="auto",  # or a specific model id, or an alias like "fast"
-    messages=[{"role": "user", "content": "Hello"}],
+    model="auto",
+    messages=[
+        {"role": "user", "content": "Hello"}
+    ],
 )
+
+print(response.choices[0].message.content)
 ```
 
-See `ARCHITECTURE.md` for the full design rationale (why each decision was
-made, what was deliberately left out, and what was learned from studying
-LiteLLM/Portkey/OpenRouter).
+OctoFlux works with **Groq, OpenRouter, NVIDIA NIM**, and other providers exposing OpenAI-compatible APIs.
+
+> **Design goal:** keep the application-facing API stable while making upstream providers interchangeable.
+
+See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the design rationale, trade-offs, and non-goals.
 
 ---
 
-## 1. What OctoFlux is
+## Features
 
-- An async FastAPI service exposing `POST /v1/chat/completions`,
-  `POST /v1/responses`, and `GET /v1/models`.
-- A **router** that picks provider → model → API key based on priority,
-  health, cooldowns, and locally-enforced rate limits.
-- A **retry/failover engine** that is *error-aware*: it retries 429s and 5xxs
-  against another key/provider, but returns 400s and context-length errors
-  straight to the caller instead of hammering every provider with the same
-  broken request.
-- Entirely **configuration-driven** — adding a provider is a YAML block, not
-  a Python class.
-- A single process, in-memory by default, with **zero mandatory external
-  infrastructure** (no Postgres, no Redis, no Kafka).
+* **OpenAI-compatible API**
 
-## 2. Architecture
+  * `POST /v1/chat/completions`
+  * `POST /v1/responses`
+  * `GET /v1/models`
+  * `GET /v1/aliases`
 
+* **Intelligent routing**
+
+  * Provider and model priorities
+  * Health-aware routing
+  * API-key rotation
+  * Local rate-limit enforcement
+  * Model aliases
+  * Automatic routing with `model: "auto"`
+
+* **Error-aware failover**
+
+  * Retries rate limits, timeouts, connection failures, and server errors
+  * Rotates keys and providers
+  * Avoids retrying invalid requests
+  * Avoids retrying context-length failures
+  * Bounded retry attempts
+
+* **Configuration-driven providers**
+
+  * Add providers without writing Python code
+  * Environment-variable based secrets
+  * Per-provider and per-key limits
+  * Custom authentication headers
+
+* **Health monitoring**
+
+  * Per-provider health
+  * Per-key health
+  * Cooldown tracking
+  * Background `/models` probes
+  * Manual provider/key testing
+
+* **Operational visibility**
+
+  * Structured JSON logging
+  * Request IDs
+  * Usage counters
+  * `/metrics`
+  * Admin API
+  * Web dashboard
+  * Runtime configuration reload
+
+* **Streaming**
+
+  * Pass-through SSE streaming
+  * Failover before the first response byte
+  * No silent stream duplication
+
+* **Zero mandatory infrastructure**
+
+  * No PostgreSQL
+  * No Redis
+  * No Kafka
+  * Runtime state is in-memory by default
+
+---
+
+## Architecture
+
+```text
+                         ┌──────────────────────┐
+                         │      Application     │
+                         │  OpenAI SDK / HTTP   │
+                         └──────────┬───────────┘
+                                    │
+                                    ▼
+                         ┌──────────────────────┐
+                         │      OctoFlux        │
+                         │                      │
+                         │  Authentication      │
+                         │        ↓             │
+                         │  Model Resolution    │
+                         │        ↓             │
+                         │  Router              │
+                         │        ↓             │
+                         │  Limits / Health     │
+                         │        ↓             │
+                         │  Retry / Failover    │
+                         └──────────┬───────────┘
+                                    │
+                    ┌───────────────┼───────────────┐
+                    ▼               ▼               ▼
+              ┌──────────┐   ┌──────────┐   ┌──────────┐
+              │   Groq   │   │OpenRouter│   │ NVIDIA   │
+              │          │   │          │   │   NIM    │
+              └──────────┘   └──────────┘   └──────────┘
 ```
+
+The request path is intentionally deterministic:
+
+```text
 Client
-  → auth (OctoFlux client key)
-  → Router            (resolve model → ordered provider/model/key candidates)
-  → Scheduler/Retry    (send upstream, classify result, backoff, fail over)
-  → OpenAICompatibleProvider (pooled httpx.AsyncClient per provider)
-  → Health/Limits/Usage registries (runtime state, separate from config)
-  → structured JSON logs (no secrets)
+  │
+  ├── Authenticate
+  │
+  ├── Resolve model / alias / auto
+  │
+  ├── Build provider → model → key candidates
+  │
+  ├── Filter disabled / unhealthy / rate-limited targets
+  │
+  ├── Sort candidates by priority
+  │
+  ├── Select API key
+  │
+  ├── Send upstream request
+  │
+  ├── Classify response
+  │
+  └── Retry / fail over when appropriate
 ```
 
-```
+Every routing decision is logged with its reason through:
+
+`app/observability/logging.py`
+
+---
+
+## Project Structure
+
+```text
 OctoFlux/
 ├── app/
-│   ├── main.py                 # FastAPI app + lifespan (loads config, builds AppState)
+│   ├── main.py
+│   │
 │   ├── api/
-│   │   ├── chat.py             # POST /v1/chat/completions (streaming + non-streaming)
-│   │   ├── responses.py        # POST /v1/responses (thin mirror, see §13)
-│   │   ├── models.py           # GET /v1/models
-│   │   └── deps.py             # client auth, request-id
+│   │   ├── chat.py
+│   │   ├── responses.py
+│   │   ├── models.py
+│   │   └── deps.py
+│   │
 │   ├── core/
-│   │   ├── config.py           # YAML load, ${ENV} resolution, fail-fast validation
-│   │   ├── router.py           # candidate resolution (priority/health/limits/rotation)
-│   │   ├── retry.py            # scheduler: backoff, failover, attempt budget
-│   │   ├── errors.py           # HTTP status/body -> ErrorCategory -> RetryDecision
-│   │   ├── health.py           # per-provider/per-key health + cooldown state
-│   │   ├── limits.py           # in-memory sliding-window RPM/RPD/TPM/TPD/concurrency
-│   │   ├── usage.py            # in-memory counters (requests, tokens, latency)
-│   │   └── app_state.py        # wires config + registries + scheduler together
+│   │   ├── config.py
+│   │   ├── router.py
+│   │   ├── retry.py
+│   │   ├── errors.py
+│   │   ├── health.py
+│   │   ├── limits.py
+│   │   ├── usage.py
+│   │   └── app_state.py
+│   │
 │   ├── providers/
-│   │   ├── base.py             # ProviderAdapter protocol
-│   │   ├── openai_compatible.py# the one generic adapter (config-driven)
-│   │   └── registry.py         # one adapter instance per configured provider
+│   │   ├── base.py
+│   │   ├── openai_compatible.py
+│   │   └── registry.py
+│   │
 │   ├── models/
-│   │   ├── provider.py         # Pydantic config schema (Provider/Key/Model/Limits/...)
-│   │   └── request.py          # OpenAI-compatible request/response schemas
-│   ├── admin/status.py         # /health /admin/status /admin/providers /admin/usage /metrics /admin/reload
-│   └── observability/logging.py# structured JSON logging, secret redaction
+│   │   ├── provider.py
+│   │   └── request.py
+│   │
+│   ├── admin/
+│   │   └── status.py
+│   │
+│   └── observability/
+│       └── logging.py
+│
 ├── config/
-│   ├── OctoFlux.yaml          # runnable example config (Groq + disabled OpenRouter)
-│   └── providers.example.yaml  # reference blocks for more providers
-├── tests/                      # 67 tests, mocked upstreams via respx (no real network)
-├── scripts/benchmark.py        # routing/scheduling overhead benchmark
-├── Dockerfile                  # production container image
-├── docker-compose.yml          # production Compose service
+│   ├── OctoFlux.yaml
+│   └── providers.example.yaml
+│
+├── tests/
+├── scripts/
+│   └── benchmark.py
+│
+├── Dockerfile
+├── docker-compose.yml
 ├── .dockerignore
-├── ARCHITECTURE.md             # design rationale (read this first)
-├── pyproject.toml
-└── .env.example
+├── .env.example
+├── ARCHITECTURE.md
+└── pyproject.toml
 ```
 
-## 3. Installation
+---
 
-Requires Python 3.11+.
+# Quick Start
+
+## Requirements
+
+* Python **3.11+**
+* An API key for at least one OpenAI-compatible provider
+
+## 1. Clone
 
 ```bash
-git clone <this repo> OctoFlux && cd OctoFlux
-cp .env.example .env
-# edit .env: set OctoFlux_CLIENT_KEY and at least one provider's API key
+git clone <this-repo> OctoFlux
+cd OctoFlux
 ```
 
-### Linux / local development startup
-
-```bash
-:~/Octo-Flux# chmod +x run.sh
-:~/Octo-Flux# ./run.sh
-```
-
-This creates `.venv` automatically if it does not exist, installs the project
-with the dev dependencies, and then starts the Uvicorn app with live reload.
-
-### Run with PM2 on Linux
-
-```bash
-:~/Octo-Flux# npm install -g pm2
-:~/Octo-Flux# ./run.sh
-
-# After a successfull installion and run
-:~/Octo-Flux# Ctrl + C
-:~/Octo-Flux# pm2 start "python -m uvicorn app.main:app --host 0.0.0.0 --port 8000" --name octoflux
-:~/Octo-Flux# pm2 status
-:~/Octo-Flux# pm2 logs octoflux
-```
-
-Use this when you want the app to keep running in the background as a managed
-service on Linux. If you prefer to reuse the helper script under PM2, you can
-also start it with:
-
-```bash
-:~/Octo-Flux# pm2 start "bash ./run.sh" --name octoflux
-```
-
-This is fine for development, but the direct `uvicorn` command is the better
-production-style choice because it avoids the reload watchdog.
-
-## 4. Production Docker deployment
-
-Docker runs OctoFlux without a virtual environment inside the container. The
-image uses Python 3.12, runs as the unprivileged `octoflux` user, and starts
-Uvicorn without development reload mode.
-
-Create the environment file from the example and set the client and provider
-keys. Do not copy `.env` into the image or commit it:
+## 2. Configure environment
 
 ```bash
 cp .env.example .env
-# edit .env and set OctoFlux_CLIENT_KEY and provider API keys
 ```
 
-Build and start the production service with Docker Compose:
+Set your OctoFlux client key and provider credentials:
+
+```env
+OctoFlux_CLIENT_KEY=OctoFlux-dev-key
+GROQ_API_KEY_1=your-key
+```
+
+Provider secrets should **never** be committed to Git or written directly into the YAML configuration.
+
+## 3. Start locally
+
+The repository includes a development helper:
+
+```bash
+chmod +x run.sh
+./run.sh
+```
+
+The script:
+
+1. Creates `.venv` if necessary.
+2. Installs the project and development dependencies.
+3. Starts Uvicorn with live reload.
+
+The API will be available at:
+
+```text
+http://localhost:8000
+```
+
+## 4. Test the gateway
+
+```bash
+curl \
+  -H "Authorization: Bearer $OctoFlux_CLIENT_KEY" \
+  http://localhost:8000/v1/models
+```
+
+Send a completion request:
+
+```bash
+curl \
+  -H "Authorization: Bearer $OctoFlux_CLIENT_KEY" \
+  -H "Content-Type: application/json" \
+  -X POST \
+  http://localhost:8000/v1/chat/completions \
+  -d '{
+    "model": "auto",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Hello"
+      }
+    ]
+  }'
+```
+
+---
+
+# Docker Deployment
+
+OctoFlux includes a production-oriented Docker image.
+
+The container:
+
+* Uses Python 3.12.
+* Runs as the unprivileged `octoflux` user.
+* Does not use development reload mode.
+* Exposes port `8000`.
+* Includes a health check against `/health`.
+
+Create your environment file:
+
+```bash
+cp .env.example .env
+```
+
+Build and start:
 
 ```bash
 docker compose up -d --build
+```
+
+Check the service:
+
+```bash
 docker compose ps
 docker compose logs -f octoflux
 ```
 
-The API is available at `http://localhost:8000`. The container health check
-calls `GET /health` every 30 seconds:
+Health check:
 
 ```bash
 curl http://localhost:8000/health
 ```
 
-To stop the service:
+Stop:
 
 ```bash
 docker compose down
 ```
 
-Alternatively, build and run the image directly:
+### Direct Docker execution
 
 ```bash
 docker build -t octoflux:latest .
-docker run -d --name octoflux --restart unless-stopped \
-  --env-file .env -p 8000:8000 octoflux:latest
+
+docker run -d \
+  --name octoflux \
+  --restart unless-stopped \
+  --env-file .env \
+  -p 8000:8000 \
+  octoflux:latest
 ```
 
-## 5. Configuration
+**Never copy `.env` into the Docker image or commit it to the repository.**
 
-Everything lives in `config/OctoFlux.yaml` (path overridable via
-`OctoFlux_CONFIG`). Secrets are never written to YAML directly — reference
-environment variables:
+---
+
+# Configuration
+
+OctoFlux is configuration-driven.
+
+The default configuration is:
+
+```text
+config/OctoFlux.yaml
+```
+
+Override the path using:
+
+```env
+OctoFlux_CONFIG=/path/to/config.yaml
+```
+
+Secrets are resolved from environment variables:
 
 ```yaml
-value: "${GROQ_API_KEY_1}"          # required, startup fails if unset
-value: "${GROQ_API_KEY_2:-unset}"   # optional, falls back to "unset"
+keys:
+  - name: primary
+    value: "${GROQ_API_KEY_1}"
+
+  - name: secondary
+    value: "${GROQ_API_KEY_2:-unset}"
 ```
 
-Startup **fails fast** with a specific message on invalid config — duplicate
-provider/model/key ids, malformed `base_url`, out-of-range limits, a provider
-with no enabled keys or models, an alias pointing at an unknown provider.
+Required variables cause startup to fail when missing.
 
-## 6. Adding a provider
+Optional variables can specify a fallback using:
 
-No source changes needed — copy a block into `providers:`:
+```text
+${VARIABLE:-default}
+```
+
+OctoFlux validates the configuration at startup and fails fast on errors such as:
+
+* Duplicate provider IDs
+* Duplicate model IDs
+* Duplicate key names
+* Invalid `base_url`
+* Invalid limits
+* Providers without enabled keys
+* Providers without enabled models
+* Aliases referencing unknown providers or models
+
+---
+
+# Adding a Provider
+
+No Python code is required.
+
+Add a provider to `config/OctoFlux.yaml`:
 
 ```yaml
 providers:
-  my_new_provider:
+  my_provider:
     enabled: true
     type: openai_compatible
+
     base_url: "https://api.example.com/v1"
-    priority: 30                      # lower = tried first (all else equal)
-    key_selection: round_robin        # round_robin | least_used | priority
+
+    priority: 30
+    key_selection: round_robin
+
     keys:
       - name: primary
-        value: "${MY_NEW_PROVIDER_KEY}"
+        value: "${MY_PROVIDER_API_KEY}"
+
     models:
       - id: some-model-id
         enabled: true
         priority: 10
+
     limits:
       requests_per_minute: 30
+
     retry:
       max_attempts: 3
+
     health:
       failure_threshold: 3
       cooldown_seconds: 30
 ```
 
-More examples (NVIDIA NIM, OpenRouter, a bare-bones template) are in
-`config/providers.example.yaml`. Providers needing non-standard auth can set
-`authentication: {type: header, header: "X-Api-Key"}` or add arbitrary
-`headers:` — still pure config.
+Lower priority values are attempted first.
 
-## 7. Adding API keys
+Additional examples are available in:
 
-Add entries under a provider's `keys:` list. Each key gets independent
-runtime health, cooldown, and (optionally) its own `limits:` override — so
-you can give one key a tighter budget than the provider default:
+```text
+config/providers.example.yaml
+```
+
+Providers using non-standard authentication can configure custom headers:
+
+```yaml
+authentication:
+  type: header
+  header: "X-Api-Key"
+
+headers:
+  X-Custom-Header: "${CUSTOM_VALUE}"
+```
+
+---
+
+# API Key Rotation
+
+Keys are configured independently:
 
 ```yaml
 keys:
@@ -241,36 +470,136 @@ keys:
     value: "${KEY_1}"
     limits:
       requests_per_minute: 10
+
   - name: key-normal
     value: "${KEY_2}"
 ```
 
-## 8. Adding models
+Each key maintains independent runtime state:
 
-Add entries under a provider's `models:` list; `priority` controls fallback
-order within that provider (lower tried first). To let a request fall back
-across *different* model ids (not just across providers for the *same*
-model id), declare an alias:
+* Health
+* Cooldown
+* Usage
+* Rate limits
+* Selection state
+
+Supported key-selection strategies:
+
+```text
+round_robin
+least_used
+priority
+```
+
+---
+
+# Model Routing
+
+Models can be referenced in three ways.
+
+## Exact model
+
+```json
+{
+  "model": "llama-3.3-70b-versatile"
+}
+```
+
+OctoFlux only fails over to another provider offering that same model ID.
+
+It will **not silently substitute another model**.
+
+## Alias
+
+Aliases allow explicit model fallback:
 
 ```yaml
 aliases:
   fast:
-    - {provider: groq, model: llama-3.1-8b-instant}
-    - {provider: groq, model: llama-3.3-70b-versatile}
+    - provider: groq
+      model: llama-3.1-8b-instant
+
+    - provider: groq
+      model: llama-3.3-70b-versatile
 ```
 
-Requesting `model: "fast"` tries the alias targets in the listed order.
-Requesting `model: "auto"` tries every enabled model across every enabled
-provider, sorted by `(provider.priority, model.priority)`. Requesting an
-exact model id only ever fails over across **providers offering that same
-id** — OctoFlux never silently substitutes a different model for an exact
-request unless you've named it in an alias.
+Then:
 
-## 9. Configuring limits
+```json
+{
+  "model": "fast"
+}
+```
 
-Limits are enforced **locally**, before ever calling upstream — useful
-because provider limits are often undocumented or account-specific. Set
-them at provider level and/or per-key:
+tries the configured targets in order.
+
+Aliases are useful when you intentionally want model substitution.
+
+## Automatic routing
+
+```json
+{
+  "model": "auto"
+}
+```
+
+`auto` considers all enabled models across all enabled providers and orders candidates using:
+
+```text
+(provider.priority, model.priority)
+```
+
+---
+
+# Model Discovery
+
+```http
+GET /v1/models
+```
+
+Returns configured models and aliases using an OpenAI-compatible response format.
+
+To inspect alias targets:
+
+```http
+GET /v1/aliases
+```
+
+Example:
+
+```json
+{
+  "object": "list",
+  "data": {
+    "fast": [
+      {
+        "provider": "nvidia_nim",
+        "model": "nvidia/nemotron-3.5-lightning-30b-a3b",
+        "enabled": true
+      }
+    ]
+  }
+}
+```
+
+Both endpoints require the configured OctoFlux client key when:
+
+```yaml
+server:
+  require_auth: true
+```
+
+Configured model IDs should match the IDs exposed by the provider's `/models` endpoint.
+
+OctoFlux also handles NVIDIA NIM's publisher-prefixed model IDs when the provider returns the corresponding bare model name.
+
+---
+
+# Local Rate Limiting
+
+Limits are enforced **before an upstream request is sent**.
+
+Supported limits include:
 
 ```yaml
 limits:
@@ -278,176 +607,556 @@ limits:
   requests_per_minute: 30
   requests_per_hour: 1000
   requests_per_day: 1000
+
   tokens_per_minute: 6000
   tokens_per_hour: 100000
   tokens_per_day: 100000
+
   concurrent_requests: 5
 ```
 
-Any field left unset is unbounded. Windows are independent sliding windows
-(hitting RPD blocks even with RPM headroom).
+Unset limits are unlimited.
 
-## 10. Routing
+Windows operate independently. For example, exhausting the daily request limit blocks requests even if the minute-level limit still has capacity.
 
-Deterministic pipeline (see `app/core/router.py`):
+Limits can be configured at provider and key level.
 
-1. Resolve `model` — exact id, alias, or `"auto"`.
-2. Drop disabled providers/models.
-3. Drop providers/keys currently in cooldown.
-4. Drop providers/keys whose local limits are exhausted right now.
-5. Sort remaining candidates by `(provider.priority, model.priority)`.
-6. Order keys within a provider by `key_selection` (`round_robin` default).
+---
 
-`GET /admin/status` shows exactly what's healthy/cooling down right now;
-`POST /admin/providers/{provider_id}/keys/{key_name}/test` runs an on-demand
-`GET /models` probe for one enabled provider/key and records the result in the
-same health state used by routing. It returns `working` or `unhealthy` without
-ever returning the secret key value.
-every routing decision is logged with its reason (`app/observability/logging.py`
-event `routing_decision`) without ever logging a key value.
+# Routing Pipeline
 
-`GET /health` also reports the last background `/models` probe for every
-enabled provider key. Probes run concurrently at the shortest configured
-`health.check_interval_seconds` (default 43,200 seconds / 12 hours), and show provider/key,
-working status, latency, and a masked key hint. Terminal logs emit
-`provider_health_check` events without exposing key values.
+Routing is deterministic.
 
-## 11. Failover
+For each request OctoFlux:
 
-The retry engine (`app/core/retry.py`) is **error-aware**, not a blind loop:
+1. Resolves the requested model, alias, or `auto`.
+2. Removes disabled providers and models.
+3. Removes providers and keys in cooldown.
+4. Removes targets whose local limits are exhausted.
+5. Sorts candidates by provider and model priority.
+6. Selects a key using the configured key-selection strategy.
+7. Sends the request.
+8. Classifies the result.
+9. Retries or fails over when appropriate.
 
-| what happened | what OctoFlux does |
-|---|---|
-| 429 rate limited | cooldown that key, try another key/provider |
-| 401/403 | cooldown that key, try another key/provider (not the same key) |
-| 5xx / timeout / connection error | short backoff, then try again; soft-marks the provider unhealthy after repeated failures |
-| 400 invalid request | **return to caller immediately** — retrying elsewhere won't help |
-| context length exceeded | **return to caller immediately** — same request, same outcome everywhere |
-| model not found | try another provider that has the same model id |
+This logic is implemented primarily in:
 
-Bounded by `routing.max_total_attempts` (default 4) and never retries the
-exact same `(provider, model, key)` twice for one inbound request.
+```text
+app/core/router.py
+app/core/retry.py
+app/core/errors.py
+```
 
-## 12. Logging
+---
 
-Structured JSON, one line per event, to stdout:
+# Failover
+
+OctoFlux does not blindly retry every error.
+
+| Condition              | Behaviour                                     |
+| ---------------------- | --------------------------------------------- |
+| `429` rate limited     | Cool down the key and try another target      |
+| `401/403`              | Cool down the key and avoid retrying that key |
+| `5xx`                  | Back off and retry/fail over                  |
+| Timeout                | Back off and retry/fail over                  |
+| Connection failure     | Retry/fail over                               |
+| `400` invalid request  | Return immediately                            |
+| Context-length failure | Return immediately                            |
+| Model not found        | Try another provider with the same model      |
+
+The retry engine is bounded by:
+
+```yaml
+routing:
+  max_total_attempts: 4
+```
+
+A single inbound request never retries the exact same:
+
+```text
+(provider, model, key)
+```
+
+combination twice.
+
+This prevents retry storms and avoids repeatedly sending requests that are guaranteed to fail.
+
+---
+
+# Health Checks
+
+Provider and key health is tracked independently.
+
+The background health system periodically probes:
+
+```http
+GET /models
+```
+
+The default interval is:
+
+```text
+43,200 seconds
+12 hours
+```
+
+Checks run concurrently using the shortest configured provider interval.
+
+Health information is available through:
+
+```http
+GET /health
+GET /admin/status
+```
+
+Manual checks are also available:
+
+```http
+POST /admin/providers/{provider_id}/keys/{key_name}/test
+```
+
+A successful `/models` request means the provider accepted the request for that key.
+
+It does **not** guarantee:
+
+* Every configured model exists.
+* Every model supports chat completions.
+* The account has sufficient quota.
+* The account is not currently rate limited.
+
+The live provider response remains the source of truth.
+
+---
+
+# Admin Dashboard
+
+Open:
+
+```text
+http://localhost:8000/admin
+```
+
+The dashboard uses an existing OctoFlux client key. There is no separate admin database or password system.
+
+The key is stored in browser `sessionStorage` and sent as:
+
+```http
+Authorization: Bearer <key>
+```
+
+The dashboard provides:
+
+* Provider health and priority
+* Key health and cooldown state
+* Masked key hints
+* Model availability
+* Per-key testing
+* Request counters
+* Success/failure counters
+* Rate-limit counters
+* Timeout counters
+* Fallback counters
+* Configuration reload
+* Manual refresh
+* Sign-out
+
+### Configuration reload
+
+After modifying `config/OctoFlux.yaml` or its environment variables:
+
+```http
+POST /admin/reload
+```
+
+Reloading preserves runtime health, cooldown, and usage state for providers and keys that still exist.
+
+If the new configuration is invalid, OctoFlux keeps the currently active configuration instead of switching to a broken state.
+
+> **Security:** the client key grants access to both the gateway and admin API. Deploy the admin interface behind HTTPS and restrict access to trusted operators.
+
+---
+
+# Streaming
+
+Set:
 
 ```json
-{"ts": 1755000000.1, "event": "upstream_failure", "request_id": "abc123",
- "provider": "groq", "model": "llama-3.3-70b-versatile", "key": "groq-primary",
- "category": "rate_limited", "status_code": 429, "attempt": 1, "retryable": true}
+{
+  "stream": true
+}
 ```
 
-Key *values*, `Authorization` headers, and prompt/response bodies are never
-logged — only key *names* and sizes. Level via `OctoFlux_LOG_LEVEL`
-(`DEBUG`/`INFO`/`WARNING`/`ERROR`).
+OctoFlux proxies upstream SSE responses chunk-by-chunk without buffering the entire response.
 
-## 13. Usage tracking
+Failover is only possible **before the first byte reaches the client**.
 
-In-memory counters, no database required: requests, success/failure,
-input/output tokens, average latency, rate-limit events, fallback count —
-broken down globally and per provider/model/key. See `GET /admin/usage` or
-`GET /metrics`.
+Once streaming has started, a mid-stream failure terminates the connection instead of restarting the request against another provider.
 
-## 14. Streaming
+This prevents silently duplicated model output.
 
-`stream: true` proxies the upstream SSE stream chunk-by-chunk (never
-buffered in full). Failover only happens **before the first byte** reaches
-the client — once streaming has started, a mid-stream failure terminates the
-stream rather than restarting against another provider, so output is never
-silently duplicated.
+---
 
-`/v1/responses` is a **thin pass-through mirror** of chat completions (same
-routing/failover), not a full implementation of OpenAI's Responses API — no
-server-side conversation state or built-in tools. Use `/v1/chat/completions`
-for full functionality.
+# Responses API
 
-## 15. Security
+OctoFlux exposes:
 
-- **Client → OctoFlux**: `Authorization: Bearer <key>` checked against
-  `server.client_keys`. Disable with `server.require_auth: false` for local
-  dev only.
-- **OctoFlux → provider**: each provider's key lives only in config
-  (resolved from env) and is attached per-request; it is never returned to
-  the client and never appears in logs or `/admin/*` responses (only key
-  *names* do).
-- Admin endpoints require the same client auth.
+```http
+POST /v1/responses
+```
 
-## 16. Running locally
+This is currently a thin compatibility layer over the chat-completions routing pipeline.
 
-For a Linux local startup, the repo includes a helper script:
+It provides the same:
+
+* Provider routing
+* Key rotation
+* Limits
+* Health handling
+* Retry logic
+* Failover
+
+It is **not** a full implementation of OpenAI's Responses API.
+
+It does not currently provide:
+
+* Server-side conversation state
+* Built-in tools
+* Full Responses API feature parity
+
+For maximum compatibility, use:
+
+```http
+POST /v1/chat/completions
+```
+
+---
+
+# Observability
+
+OctoFlux emits structured JSON logs to stdout.
+
+Example:
+
+```json
+{
+  "ts": 1755000000.1,
+  "event": "upstream_failure",
+  "request_id": "abc123",
+  "provider": "groq",
+  "model": "llama-3.3-70b-versatile",
+  "key": "groq-primary",
+  "category": "rate_limited",
+  "status_code": 429,
+  "attempt": 1,
+  "retryable": true
+}
+```
+
+Sensitive information is never logged.
+
+OctoFlux does **not** log:
+
+* API-key values
+* Authorization headers
+* Prompt bodies
+* Response bodies
+
+Key names and metadata may be logged for operational visibility.
+
+Set the log level with:
+
+```env
+OctoFlux_LOG_LEVEL=INFO
+```
+
+Supported levels:
+
+```text
+DEBUG
+INFO
+WARNING
+ERROR
+```
+
+Every routing decision includes its reason through the `routing_decision` event.
+
+---
+
+# Usage Tracking
+
+Runtime usage statistics are kept in memory.
+
+Tracked metrics include:
+
+* Requests
+* Successful requests
+* Failed requests
+* Input tokens
+* Output tokens
+* Latency
+* Rate-limit events
+* Fallbacks
+
+Statistics are available globally and by:
+
+* Provider
+* Model
+* API key
+
+Endpoints:
+
+```http
+GET /admin/usage
+GET /metrics
+```
+
+No database is required.
+
+A persistent `UsageStore` can be introduced later if historical usage needs to survive restarts.
+
+---
+
+# Security
+
+## Client → OctoFlux
+
+Authentication uses:
+
+```http
+Authorization: Bearer <client-key>
+```
+
+Keys are configured through:
+
+```yaml
+server:
+  client_keys:
+    - "${OctoFlux_CLIENT_KEY}"
+```
+
+Authentication can be disabled for local development:
+
+```yaml
+server:
+  require_auth: false
+```
+
+Do **not** disable authentication on an exposed production instance.
+
+## OctoFlux → Provider
+
+Provider credentials:
+
+* Are resolved from environment variables.
+* Are attached only to upstream requests.
+* Are never returned through the API.
+* Are never included in logs.
+* Are never exposed through the admin dashboard.
+
+---
+
+# PM2
+
+For Linux development or lightweight deployments, OctoFlux can be managed with PM2.
+
+Install:
 
 ```bash
-:~/Octo-Flux# chmod +x run.sh
-:~/Octo-Flux# ./run.sh
+npm install -g pm2
 ```
 
-This creates `.venv` automatically if needed and starts the app with the local
-Python environment.
-
-If you want to run the app in the background with PM2 instead:
+Start the application directly:
 
 ```bash
-:~/Octo-Flux# python3 -m venv .venv
-:~/Octo-Flux# source .venv/bin/activate
-:~/Octo-Flux# pip install -e ".[dev]"
-:~/Octo-Flux# pm2 start "python -m uvicorn app.main:app --host 0.0.0.0 --port 8000" --name octoflux
-:~/Octo-Flux# pm2 status
-:~/Octo-Flux# pm2 logs octoflux
+pm2 start \
+  "python -m uvicorn app.main:app --host 0.0.0.0 --port 8000" \
+  --name octoflux
 ```
+
+Inspect:
 
 ```bash
-curl -H "Authorization: Bearer $OctoFlux_CLIENT_KEY" http://localhost:8000/v1/models
-
-curl -H "Authorization: Bearer $OctoFlux_CLIENT_KEY" -H "Content-Type: application/json" \
-  -X POST http://localhost:8000/v1/chat/completions \
-  -d '{"model":"auto","messages":[{"role":"user","content":"hello"}]}'
+pm2 status
+pm2 logs octoflux
 ```
 
-## 17. Running in production
+You can also run the helper script:
 
-- Run behind a process manager (systemd, supervisord) or container; a single
-  `uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1` process is
-  the intended deployment unit (rate-limit/health state is in-process and
-  not shared across workers — run one worker, or put a load balancer with
-  sticky-enough routing in front if you need more throughput than one
-  process provides).
-- Set `OctoFlux_LOG_LEVEL=INFO` and ship stdout to your log aggregator.
-- `POST /admin/reload` reloads `config/OctoFlux.yaml` without restarting
-  and without losing live health/cooldown/usage state for targets that still
-  exist — use it after editing config on disk.
-- No database, cache, or message queue is required to run this in
-  production; add a persistent `UsageStore` implementation later only if you
-  need usage history to survive restarts (the interface is already isolated
-  in `app/core/usage.py` for this).
+```bash
+pm2 start "bash ./run.sh" --name octoflux
+```
 
-## Testing
+The direct Uvicorn command is preferable for production-style PM2 deployments because `run.sh` is intended primarily for development and may enable reload behaviour.
+
+---
+
+# Production Deployment
+
+OctoFlux is designed to run as a **single process** by default.
+
+```bash
+uvicorn app.main:app \
+  --host 0.0.0.0 \
+  --port 8000 \
+  --workers 1
+```
+
+The single-worker constraint matters because health, rate-limit, and usage state are currently stored in process memory.
+
+Multiple independent workers would therefore have independent runtime state.
+
+For production:
+
+* Run one worker per OctoFlux instance.
+* Use Docker, systemd, supervisord, or another process manager.
+* Put a load balancer in front if multiple instances are required.
+* Configure centralized logging.
+* Protect the admin interface.
+* Keep provider credentials outside the repository.
+* Use HTTPS when exposing the gateway beyond localhost.
+
+No external database, cache, or message queue is required.
+
+---
+
+# Development
+
+Create a virtual environment:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+Install development dependencies:
 
 ```bash
 pip install -e ".[dev]"
+```
+
+Run the application:
+
+```bash
+uvicorn app.main:app \
+  --host 0.0.0.0 \
+  --port 8000 \
+  --reload
+```
+
+---
+
+# Testing
+
+Run the test suite:
+
+```bash
 pytest -q
 ```
 
-67 tests, all against mocked upstreams (`respx` intercepts `httpx` — no real
-network calls), covering: config validation, env resolution, routing
-priority/rotation/cooldown/limits, the full error-classification matrix,
-end-to-end failover (provider A 429 → B success; key1 exhausted → key2 fails
-→ provider B succeeds; model failure via alias → alternate model; timeout →
-failover; invalid-request and context-length **not** failing over),
-streaming pre-first-byte failover, and API-level auth enforcement.
+The test suite uses `respx` to mock upstream HTTP requests.
 
-## Benchmarking
+No real provider network calls are required.
+
+Coverage includes:
+
+* Configuration validation
+* Environment-variable resolution
+* Provider/model/key routing
+* Priority ordering
+* Key rotation
+* Cooldowns
+* Local rate limits
+* Error classification
+* Provider failover
+* Key failover
+* Alias-based model fallback
+* Timeout handling
+* Invalid-request handling
+* Context-length handling
+* Streaming pre-first-byte failover
+* API authentication
+
+---
+
+# Benchmarking
+
+Benchmark routing and scheduling overhead with:
 
 ```bash
-python scripts/benchmark.py --requests 500 --concurrency 20
+python scripts/benchmark.py \
+  --requests 500 \
+  --concurrency 20
 ```
 
-Measures OctoFlux's own routing/scheduling overhead against a mocked
-upstream (isolates gateway cost from real network/provider latency).
+The benchmark uses a mocked upstream to isolate OctoFlux's internal routing and scheduling overhead from real network and provider latency.
 
-## What's out of scope in v1
+---
 
-See `ARCHITECTURE.md` "Non-goals" — no multi-tenant billing, no
-distributed/shared rate-limit state across processes, no config
-file-watching (use `/admin/reload`), no full Responses API parity, no
-mandatory external infrastructure.
+# API Overview
+
+| Method | Endpoint                                      | Purpose                            |
+| ------ | --------------------------------------------- | ---------------------------------- |
+| `POST` | `/v1/chat/completions`                        | OpenAI-compatible chat completions |
+| `POST` | `/v1/responses`                               | Responses API compatibility layer  |
+| `GET`  | `/v1/models`                                  | List configured models and aliases |
+| `GET`  | `/v1/aliases`                                 | Inspect alias targets              |
+| `GET`  | `/health`                                     | Gateway and provider health        |
+| `GET`  | `/admin`                                      | Admin dashboard                    |
+| `GET`  | `/admin/status`                               | Runtime routing state              |
+| `GET`  | `/admin/usage`                                | Runtime usage statistics           |
+| `GET`  | `/metrics`                                    | Metrics endpoint                   |
+| `POST` | `/admin/reload`                               | Reload configuration               |
+| `POST` | `/admin/providers/{provider}/keys/{key}/test` | Test a provider key                |
+
+Protected endpoints require the configured OctoFlux client key when authentication is enabled.
+
+---
+
+# Project Status
+
+OctoFlux is intentionally focused on the gateway layer.
+
+The architecture favors:
+
+* Simple deployment
+* Deterministic routing
+* Provider independence
+* Explicit failure handling
+* Minimal infrastructure
+* Configuration over provider-specific code
+
+---
+
+# Non-Goals
+
+The following are intentionally outside v1:
+
+* Multi-tenant billing
+* Distributed rate-limit state
+* Shared runtime state across workers
+* Automatic configuration file watching
+* Full OpenAI Responses API parity
+* Mandatory Redis/PostgreSQL/Kafka infrastructure
+* Persistent usage history
+
+Configuration changes are applied explicitly through:
+
+```http
+POST /admin/reload
+```
+
+See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the complete list of design non-goals and architectural trade-offs.
+
+---
+
+# Support the Project
+
+If OctoFlux is useful to you, consider supporting its development:
+
+**[☕ Buy Me a Coffee](https://buymeacoffee.com/octoprograms)**
+
+---
+
+## License
+
+See the repository's license file for licensing terms.

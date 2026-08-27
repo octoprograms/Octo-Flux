@@ -20,6 +20,13 @@ def _model_is_available(provider_id: str, model_id: str, available_ids: set[str]
     return provider_id == "nvidia_nim" and model_id.rsplit("/", 1)[-1] in available_ids
 
 
+def _model_availability(provider_id: str, model_id: str, keys: list) -> bool | None:
+    checks = [key.last_check_model_ids for key in keys if key.last_check_model_ids is not None]
+    if not checks:
+        return None
+    return any(_model_is_available(provider_id, model_id, set(model_ids)) for model_ids in checks)
+
+
 @router.get("/health")
 async def health(state: AppState = Depends(get_state)) -> dict:
     providers = {}
@@ -49,8 +56,10 @@ async def admin_status(state: AppState = Depends(get_state)) -> dict:
     for pid, provider in state.config.providers.items():
         provider_health = state.health.provider(pid)
         keys_status = {}
+        key_health_states = []
         for key in provider.keys:
             kh = state.health.key(pid, key.name)
+            key_health_states.append(kh)
             keys_status[key.name] = {
                 "status": kh.status(provider.health.failure_threshold).value,
                 "consecutive_failures": kh.consecutive_failures,
@@ -66,7 +75,15 @@ async def admin_status(state: AppState = Depends(get_state)) -> dict:
         providers_status[pid] = {
             "enabled": provider.enabled,
             "status": provider_health.status(provider.health.failure_threshold).value if provider.enabled else "disabled",
-            "models": [{"id": m.id, "enabled": m.enabled, "priority": m.priority} for m in provider.models],
+            "models": [
+                {
+                    "id": m.id,
+                    "enabled": m.enabled,
+                    "priority": m.priority,
+                    "available": _model_availability(pid, m.id, key_health_states),
+                }
+                for m in provider.models
+            ],
             "keys": keys_status,
         }
     return {"providers": providers_status}

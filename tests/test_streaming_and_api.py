@@ -46,6 +46,17 @@ def test_models_endpoint_lists_configured_models(app_state: AppState):
     assert "fast" in ids  # alias
 
 
+def test_aliases_endpoint_exposes_ordered_targets(app_state: AppState):
+    client = _client_for(app_state)
+    resp = client.get("/v1/aliases")
+
+    assert resp.status_code == 200
+    assert resp.json()["data"]["fast"] == [
+        {"provider": "alpha", "model": "model-a", "enabled": True},
+        {"provider": "beta", "model": "model-a", "enabled": True},
+    ]
+
+
 def test_health_endpoint(app_state: AppState):
     client = _client_for(app_state)
     resp = client.get("/health")
@@ -69,6 +80,19 @@ def test_admin_can_test_one_provider_key(app_state: AppState):
     assert resp.json()["models"] == [{"id": "model-a", "available": True}]
     assert route.call_count == 1
     assert app_state.health.key("alpha", "alpha-key-1").last_check_ok is True
+
+
+@respx.mock
+def test_admin_status_reports_latest_model_availability(app_state: AppState):
+    respx.get("http://alpha.test/v1/models").mock(
+        return_value=httpx.Response(200, json={"data": [{"id": "model-a"}]})
+    )
+    client = _client_for(app_state)
+
+    client.post("/admin/providers/alpha/keys/alpha-key-1/test")
+    models = client.get("/admin/status").json()["providers"]["alpha"]["models"]
+
+    assert models == [{"id": "model-a", "enabled": True, "priority": 10, "available": True}]
 
 
 @respx.mock
