@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.api.deps import get_state, require_client_auth
 from app.core.app_state import AppState
 from app.core.config import ConfigError, load_config_from_env
 from app.core.provider_checks import mask_api_key
 from app.observability.logging import log_event
+from app.providers.base import UpstreamSuccess
 
 router = APIRouter()
 
@@ -84,6 +85,31 @@ async def admin_providers(state: AppState = Depends(get_state)) -> dict:
 @router.get("/admin/usage", dependencies=[Depends(require_client_auth)])
 async def admin_usage(state: AppState = Depends(get_state)) -> dict:
     return state.usage.snapshot()
+
+
+@router.post("/admin/providers/{provider_id}/keys/{key_name}/test", dependencies=[Depends(require_client_auth)])
+async def test_provider_key(provider_id: str, key_name: str, state: AppState = Depends(get_state)) -> dict:
+    provider = state.config.providers.get(provider_id)
+    if provider is None:
+        raise HTTPException(status_code=404, detail=f"Unknown provider '{provider_id}'.")
+
+    key = next((item for item in provider.keys if item.name == key_name), None)
+    if key is None:
+        raise HTTPException(status_code=404, detail=f"Unknown key '{key_name}' for provider '{provider_id}'.")
+    if not provider.enabled or not key.enabled:
+        raise HTTPException(status_code=409, detail="The provider and key must both be enabled to test them.")
+
+    result = await state.health_monitor.check_key(provider_id, key.name, key.value)
+    working = isinstance(result, UpstreamSuccess)
+    return {
+        "provider": provider_id,
+        "key": key.name,
+        "key_hint": mask_api_key(key.value),
+        "status": "working" if working else "unhealthy",
+        "status_code": result.status_code,
+        "latency_ms": round(result.latency_ms, 1),
+        "reason": None if working else result.body_text[:200] or "connection failed",
+    }
 
 
 @router.get("/metrics", dependencies=[Depends(require_client_auth)])

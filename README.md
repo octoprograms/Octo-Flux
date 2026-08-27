@@ -100,14 +100,43 @@ Requires Python 3.11+.
 
 ```bash
 git clone <this repo> OctoFlux && cd OctoFlux
-pip install -e ".[dev]"       # or: pip install fastapi "uvicorn[standard]" httpx pydantic pyyaml
 cp .env.example .env
 # edit .env: set OctoFlux_CLIENT_KEY and at least one provider's API key
-
-# Linux/macOS: creates and initializes .venv on first run
-chmod +x run.sh
-./run.sh
 ```
+
+### Linux / local development startup
+
+```bash
+:~/Octo-Flux# chmod +x run.sh
+:~/Octo-Flux# ./run.sh
+```
+
+This creates `.venv` automatically if it does not exist, installs the project
+with the dev dependencies, and then starts the Uvicorn app with live reload.
+
+### Run with PM2 on Linux
+
+```bash
+:~/Octo-Flux# npm install -g pm2
+:~/Octo-Flux# ./run.sh
+
+# After a successfull installion and run
+:~/Octo-Flux# Ctrl + C
+:~/Octo-Flux# pm2 start "python -m uvicorn app.main:app --host 0.0.0.0 --port 8000" --name octoflux
+:~/Octo-Flux# pm2 status
+:~/Octo-Flux# pm2 logs octoflux
+```
+
+Use this when you want the app to keep running in the background as a managed
+service on Linux. If you prefer to reuse the helper script under PM2, you can
+also start it with:
+
+```bash
+:~/Octo-Flux# pm2 start "bash ./run.sh" --name octoflux
+```
+
+This is fine for development, but the direct `uvicorn` command is the better
+production-style choice because it avoids the reload watchdog.
 
 ## 4. Production Docker deployment
 
@@ -270,6 +299,10 @@ Deterministic pipeline (see `app/core/router.py`):
 6. Order keys within a provider by `key_selection` (`round_robin` default).
 
 `GET /admin/status` shows exactly what's healthy/cooling down right now;
+`POST /admin/providers/{provider_id}/keys/{key_name}/test` runs an on-demand
+`GET /models` probe for one enabled provider/key and records the result in the
+same health state used by routing. It returns `working` or `unhealthy` without
+ever returning the secret key value.
 every routing decision is logged with its reason (`app/observability/logging.py`
 event `routing_decision`) without ever logging a key value.
 
@@ -342,9 +375,25 @@ for full functionality.
 
 ## 16. Running locally
 
+For a Linux local startup, the repo includes a helper script:
+
 ```bash
-export $(cat .env | xargs)   # or your preferred env loader
-uvicorn app.main:app --reload --port 8000
+:~/Octo-Flux# chmod +x run.sh
+:~/Octo-Flux# ./run.sh
+```
+
+This creates `.venv` automatically if needed and starts the app with the local
+Python environment.
+
+If you want to run the app in the background with PM2 instead:
+
+```bash
+:~/Octo-Flux# python3 -m venv .venv
+:~/Octo-Flux# source .venv/bin/activate
+:~/Octo-Flux# pip install -e ".[dev]"
+:~/Octo-Flux# pm2 start "python -m uvicorn app.main:app --host 0.0.0.0 --port 8000" --name octoflux
+:~/Octo-Flux# pm2 status
+:~/Octo-Flux# pm2 logs octoflux
 ```
 
 ```bash

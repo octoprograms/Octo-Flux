@@ -42,14 +42,14 @@ class ProviderHealthMonitor:
 
     async def check_once(self) -> None:
         checks = [
-            self._check_key(provider_id, provider, key.name, key.value)
+            self.check_key(provider_id, key.name, key.value)
             for provider_id, provider in self.config.enabled_providers().items()
             for key in provider.keys
             if key.enabled
         ]
         await asyncio.gather(*checks)
 
-    async def _check_key(self, provider_id: str, provider, key_name: str, api_key: str) -> None:
+    async def check_key(self, provider_id: str, key_name: str, api_key: str) -> UpstreamSuccess | UpstreamFailure:
         result = await self.providers.health_check(provider_id, api_key)
         if isinstance(result, UpstreamSuccess):
             ok = True
@@ -75,6 +75,7 @@ class ProviderHealthMonitor:
             reason=reason,
             latency_ms=round(result.latency_ms, 1),
         )
+        return result
 
     async def _run(self) -> None:
         interval = min(

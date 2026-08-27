@@ -55,6 +55,45 @@ def test_health_endpoint(app_state: AppState):
 
 
 @respx.mock
+def test_admin_can_test_one_provider_key(app_state: AppState):
+    route = respx.get("http://alpha.test/v1/models").mock(return_value=httpx.Response(200, json={"data": []}))
+    client = _client_for(app_state)
+
+    resp = client.post("/admin/providers/alpha/keys/alpha-key-1/test")
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "working"
+    assert resp.json()["key_hint"] == "**"
+    assert route.call_count == 1
+    assert app_state.health.key("alpha", "alpha-key-1").last_check_ok is True
+
+
+@respx.mock
+def test_admin_provider_key_test_reports_upstream_failure(app_state: AppState):
+    respx.get("http://alpha.test/v1/models").mock(return_value=httpx.Response(401, text="invalid key"))
+    client = _client_for(app_state)
+
+    resp = client.post("/admin/providers/alpha/keys/alpha-key-1/test")
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "unhealthy"
+    assert resp.json()["status_code"] == 401
+    assert app_state.health.key("alpha", "alpha-key-1").last_check_ok is False
+
+
+def test_admin_provider_key_test_validates_target_and_auth(two_provider_config):
+    two_provider_config.server.require_auth = True
+    two_provider_config.server.client_keys = ["secret123"]
+    state = AppState.build(two_provider_config)
+    client = _client_for(state)
+
+    auth = {"Authorization": "Bearer secret123"}
+    assert client.post("/admin/providers/missing/keys/key/test", headers=auth).status_code == 404
+    assert client.post("/admin/providers/alpha/keys/missing/test", headers=auth).status_code == 404
+    assert client.post("/admin/providers/alpha/keys/alpha-key-1/test").status_code == 401
+
+
+@respx.mock
 @pytest.mark.asyncio
 async def test_background_provider_check_records_working_key(app_state: AppState):
     route = respx.get("http://alpha.test/v1/models").mock(return_value=httpx.Response(200, json={"data": []}))
