@@ -56,7 +56,9 @@ def test_health_endpoint(app_state: AppState):
 
 @respx.mock
 def test_admin_can_test_one_provider_key(app_state: AppState):
-    route = respx.get("http://alpha.test/v1/models").mock(return_value=httpx.Response(200, json={"data": []}))
+    route = respx.get("http://alpha.test/v1/models").mock(
+        return_value=httpx.Response(200, json={"data": [{"id": "model-a"}]})
+    )
     client = _client_for(app_state)
 
     resp = client.post("/admin/providers/alpha/keys/alpha-key-1/test")
@@ -64,6 +66,7 @@ def test_admin_can_test_one_provider_key(app_state: AppState):
     assert resp.status_code == 200
     assert resp.json()["status"] == "working"
     assert resp.json()["key_hint"] == "**"
+    assert resp.json()["models"] == [{"id": "model-a", "available": True}]
     assert route.call_count == 1
     assert app_state.health.key("alpha", "alpha-key-1").last_check_ok is True
 

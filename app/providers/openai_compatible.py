@@ -116,7 +116,17 @@ class OpenAICompatibleProvider:
                 latency_ms=latency_ms,
                 headers=resp.headers,
             )
-        return UpstreamSuccess(status_code=resp.status_code, json_body={}, latency_ms=latency_ms)
+        data = resp.json()
+        model_ids = [
+            item.get("id") or item.get("name")
+            for item in data.get("data", data if isinstance(data, list) else [])
+            if isinstance(item, dict) and (item.get("id") or item.get("name"))
+        ]
+        return UpstreamSuccess(
+            status_code=resp.status_code,
+            json_body={"model_ids": model_ids},
+            latency_ms=latency_ms,
+        )
 
     async def aclose(self) -> None:
         await self._client.aclose()

@@ -12,6 +12,14 @@ from app.providers.base import UpstreamSuccess
 router = APIRouter()
 
 
+def _model_is_available(provider_id: str, model_id: str, available_ids: set[str]) -> bool:
+    if model_id in available_ids:
+        return True
+    # NVIDIA's /models endpoint returns bare model names while the config
+    # keeps the publisher prefix for routing consistency.
+    return provider_id == "nvidia_nim" and model_id.rsplit("/", 1)[-1] in available_ids
+
+
 @router.get("/health")
 async def health(state: AppState = Depends(get_state)) -> dict:
     providers = {}
@@ -101,6 +109,7 @@ async def test_provider_key(provider_id: str, key_name: str, state: AppState = D
 
     result = await state.health_monitor.check_key(provider_id, key.name, key.value)
     working = isinstance(result, UpstreamSuccess)
+    available_model_ids = set(result.json_body.get("model_ids", [])) if working else set()
     return {
         "provider": provider_id,
         "key": key.name,
@@ -109,6 +118,11 @@ async def test_provider_key(provider_id: str, key_name: str, state: AppState = D
         "status_code": result.status_code,
         "latency_ms": round(result.latency_ms, 1),
         "reason": None if working else result.body_text[:200] or "connection failed",
+        "models": [
+            {"id": model.id, "available": _model_is_available(provider_id, model.id, available_model_ids)}
+            for model in provider.models
+            if model.enabled
+        ],
     }
 
 
