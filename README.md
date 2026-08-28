@@ -8,6 +8,12 @@
 
 --- 
 
+[![OpenAI Compatible](https://img.shields.io/badge/OpenAI-Compatible-412991?logo=openai&logoColor=white)](README.md)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-005571?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![Docker](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
+[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-Support%20the%20Project-yellow?logo=buymeacoffee&logoColor=white)](https://www.buymeacoffee.com/octoprograms)
+
 **OctoFlux is an OpenAI-compatible LLM gateway with intelligent routing, key rotation, rate limiting, health checks, and provider failover.**
 
 OctoFlux sits between your application and multiple OpenAI-compatible LLM providers. It handles provider selection, API-key rotation, local rate limiting, health tracking, retries, and failover so your application doesn't have to.
