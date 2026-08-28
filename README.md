@@ -233,7 +233,7 @@ OctoFlux/
 ## 1. Clone
 
 ```bash
-git clone <this-repo> OctoFlux
+git clone https://github.com/octoprograms/Octo-Flux.git OctoFlux
 cd OctoFlux
 ```
 
