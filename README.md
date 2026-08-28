@@ -1,6 +1,14 @@
-# OctoFlux
+<!-- markdownlint-disable MD033 -->
+<div align="center">
+  <a href="https://octoprograms.com" target="_blank">
+    <img src="assets/OctoFlux.svg" alt="OctoFlux" width="400">
+  </a>
+</div>
+<!-- markdownlint-enable MD033 -->
 
-**OpenAI-compatible LLM gateway with intelligent routing, key rotation, rate limiting, health checks, and provider failover.**
+--- 
+
+**OctoFlux is an OpenAI-compatible LLM gateway with intelligent routing, key rotation, rate limiting, health checks, and provider failover.**
 
 OctoFlux sits between your application and multiple OpenAI-compatible LLM providers. It handles provider selection, API-key rotation, local rate limiting, health tracking, retries, and failover so your application doesn't have to.
 
