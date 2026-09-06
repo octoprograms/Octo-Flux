@@ -78,6 +78,9 @@ providers:
       - id: nvidia/nemotron-3-ultra-550b-a55b:free
         enabled: true
         priority: 40
+      - id: liquid/lfm-2.5-embedding-350m:free
+        enabled: true
+        priority: 50
 
     limits:
       requests_per_minute: 20
@@ -138,3 +141,7 @@ aliases:
   reasoning:
     - provider: openrouter
       model: z-ai/glm-5.2:free
+
+  embedded:
+    - provider: openrouter
+      model: liquid/lfm-2.5-embedding-350m:free

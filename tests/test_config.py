@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import os
+import uuid
+from pathlib import Path
 
 import pytest
 
 from app.core.config import ConfigError, load_config, load_yaml_text
+from app.core.usage import UsageRegistry
 from app.models.provider import OctoFluxConfig
 from tests.conftest import make_config
 
@@ -137,3 +140,25 @@ def test_invalid_limit_rejected():
 def test_missing_config_file_raises():
     with pytest.raises(ConfigError):
         load_config("/nonexistent/path/OctoFlux.yaml")
+
+
+def test_usage_registry_restores_counters():
+    db_path = Path(__file__).with_name(f".usage-{uuid.uuid4().hex}.db")
+    try:
+        first = UsageRegistry(db_path=str(db_path))
+        first.record_attempt("alpha", "model-a", "key-1", True, 12.5)
+        first.record_tokens("alpha", "model-a", "key-1", 3, 5)
+        first.record_fallback()
+        first.close()
+
+        second = UsageRegistry(db_path=str(db_path))
+        global_usage = second.snapshot()["global"]
+
+        assert global_usage["requests"] == 1
+        assert global_usage["successful_requests"] == 1
+        assert global_usage["tokens"] == 8
+        assert global_usage["fallback_count"] == 1
+        second.close()
+    finally:
+        for suffix in ("", "-wal", "-shm"):
+            db_path.with_name(db_path.name + suffix).unlink(missing_ok=True)

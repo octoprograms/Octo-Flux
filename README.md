@@ -97,6 +97,11 @@ See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the design rationale, trade-offs, a
   * Web dashboard
   * Runtime configuration reload
 
+Usage counters are persisted to SQLite at `data/usage.db` by default, so the
+dashboard keeps request, token, latency, fallback, timeout, and rate-limit
+totals across restarts. Set `OctoFlux_USAGE_DB` to a mounted or otherwise
+durable path in deployments where the application filesystem is ephemeral.
+
 * **Streaming**
 
   * Pass-through SSE streaming
@@ -108,7 +113,8 @@ See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the design rationale, trade-offs, a
   * No PostgreSQL
   * No Redis
   * No Kafka
-  * Runtime state is in-memory by default
+  * Runtime health and rate-limit state is in-memory
+  * Usage history is stored locally in SQLite
 
 ---
 

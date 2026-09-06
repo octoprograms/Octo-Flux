@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 
 from app.core.health import HealthRegistry
@@ -26,7 +27,7 @@ class AppState:
         providers = ProviderRegistry(config)
         health = HealthRegistry()
         limits = LimitsRegistry()
-        usage = UsageRegistry()
+        usage = UsageRegistry(db_path=os.environ.get("OctoFlux_USAGE_DB", "data/usage.db"))
         scheduler = Scheduler(config, providers, health, limits, usage)
         health_monitor = ProviderHealthMonitor(config, providers, health)
         return cls(
