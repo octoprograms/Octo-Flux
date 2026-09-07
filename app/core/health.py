@@ -26,6 +26,7 @@ class HealthState:
     cooldown_until: float = 0.0
     last_failure_reason: str | None = None
     last_success_at: float | None = None
+    promotion_until: float = 0.0
     total_failures: int = 0
     last_check_at: float | None = None
     last_check_ok: bool | None = None
@@ -55,10 +56,12 @@ class HealthState:
         immediately."""
         self.cooldown_until = max(self.cooldown_until, time.monotonic() + cooldown_seconds)
 
-    def record_success(self) -> None:
+    def record_success(self, *, promote: bool = False, promotion_seconds: float = 300.0) -> None:
         self.consecutive_failures = 0
         self.cooldown_until = 0.0
         self.last_success_at = time.monotonic()
+        if promote:
+            self.promotion_until = self.last_success_at + promotion_seconds
 
     def is_in_cooldown(self) -> bool:
         return time.monotonic() < self.cooldown_until
@@ -75,6 +78,9 @@ class HealthState:
     def seconds_until_available(self) -> float:
         return max(0.0, self.cooldown_until - time.monotonic())
 
+    def is_promoted(self) -> bool:
+        return time.monotonic() < self.promotion_until
+
 
 @dataclass
 class HealthRegistry:
@@ -82,12 +88,16 @@ class HealthRegistry:
 
     _provider_health: dict[str, HealthState] = field(default_factory=dict)
     _key_health: dict[tuple[str, str], HealthState] = field(default_factory=dict)
+    _model_health: dict[tuple[str, str], HealthState] = field(default_factory=dict)
 
     def provider(self, provider_id: str) -> HealthState:
         return self._provider_health.setdefault(provider_id, HealthState())
 
     def key(self, provider_id: str, key_name: str) -> HealthState:
         return self._key_health.setdefault((provider_id, key_name), HealthState())
+
+    def model(self, provider_id: str, model_id: str) -> HealthState:
+        return self._model_health.setdefault((provider_id, model_id), HealthState())
 
     def record_check(
         self,
@@ -135,5 +145,17 @@ class HealthRegistry:
                     "last_check_model_ids": h.last_check_model_ids,
                 }
                 for (pid, kname), h in self._key_health.items()
+            },
+            "models": {
+                f"{pid}:{mid}": {
+                    "consecutive_failures": h.consecutive_failures,
+                    "total_failures": h.total_failures,
+                    "in_cooldown": h.is_in_cooldown(),
+                    "seconds_until_available": h.seconds_until_available(),
+                    "last_failure_reason": h.last_failure_reason,
+                    "last_success_at": h.last_success_at,
+                    "promoted": h.is_promoted(),
+                }
+                for (pid, mid), h in self._model_health.items()
             },
         }

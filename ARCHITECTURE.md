@@ -168,6 +168,21 @@ quota, or rate limits. The chat scheduler remains the final authority and
 classifies actual completion failures such as `model_not_found` and
 `rate_limited`.
 
+Providers may also expose dynamic model discovery through the generic adapter
+contract. OpenRouter uses this for its free, text-output model endpoint with
+an in-memory, lock-protected cache. The cache retains the last successful list
+during transient discovery failures and expires it after the configured stale
+window. Dynamic models are appended to configured candidates for `model: auto`;
+they do not replace explicitly configured models. Metadata filters out paid
+models, non-text outputs, models incompatible with obvious request
+requirements, and models in model-level cooldown. Discovery is only a
+candidate-generation hint: actual completion responses remain authoritative.
+
+Model health is tracked separately from provider and key health. Retryable
+completion failures apply an exponential, bounded cooldown to the individual
+model; successful completion resets that model state. Authentication and
+malformed-request errors do not trigger model roulette.
+
 The dashboard's **Reload configuration** action calls `POST /admin/reload`
 after operator confirmation. A successful reload swaps the parsed config and
 provider adapters while preserving compatible runtime health, cooldown, and

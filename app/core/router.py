@@ -17,6 +17,8 @@ from app.core.health import HealthRegistry
 from app.core.limits import LimitsRegistry
 from app.core.usage import UsageRegistry
 from app.models.provider import KeyConfig, OctoFluxConfig, ProviderConfig
+from app.providers.base import DiscoveredModel
+from app.providers.registry import ProviderRegistry
 
 
 @dataclass
@@ -27,6 +29,7 @@ class Candidate:
     provider_priority: int
     model_priority: int
     reason: str  # human-readable, for debug logs — never includes the key value
+    dynamic: bool = False
 
 
 @dataclass
@@ -51,11 +54,15 @@ class _RoundRobinCursor:
 
 
 class Router:
-    def __init__(self, config: OctoFluxConfig, health: HealthRegistry, limits: LimitsRegistry, usage: UsageRegistry) -> None:
+    def __init__(
+        self, config: OctoFluxConfig, health: HealthRegistry, limits: LimitsRegistry,
+        usage: UsageRegistry, providers: ProviderRegistry,
+    ) -> None:
         self.config = config
         self.health = health
         self.limits = limits
         self.usage = usage
+        self.providers = providers
         self._rr = _RoundRobinCursor()
 
     def _order_keys(self, provider: ProviderConfig, keys: list[KeyConfig]) -> list[KeyConfig]:
@@ -130,6 +137,14 @@ class Router:
         for provider_id, model_id in pairs:
             provider = self.config.providers[provider_id]
 
+            model_health = self.health.model(provider_id, model_id)
+            if model_health.is_in_cooldown():
+                excluded.append(
+                    f"model '{provider_id}:{model_id}' in cooldown for "
+                    f"{model_health.seconds_until_available():.0f}s"
+                )
+                continue
+
             provider_health = self.health.provider(provider_id)
             if provider_health.is_in_cooldown():
                 excluded.append(
@@ -177,3 +192,67 @@ class Router:
 
         candidates.sort(key=lambda c: (c.provider_priority, c.model_priority))
         return RouteResolution(candidates=candidates, excluded=excluded, model_found=True)
+
+    async def resolve_dynamic(
+        self, requested_model: str, *, payload: dict | None = None, capability: str = "chat"
+    ) -> RouteResolution:
+        resolution = self.resolve(requested_model, capability)
+        if requested_model != "auto":
+            return resolution
+
+        payload = payload or {}
+        for provider_id, provider in sorted(self.config.enabled_providers().items(), key=lambda item: item[1].priority):
+            settings = provider.dynamic_models
+            if not settings.enabled:
+                continue
+            adapter = self.providers.adapter(provider_id)
+            keys = [key for key in provider.keys if key.enabled]
+            if not keys:
+                continue
+            discovered = await adapter.discover_models(api_key=keys[0].value)
+            accepted = [model for model in discovered if _model_suits_request(model, payload)]
+            accepted.sort(
+                key=lambda model: (
+                    not self.health.model(provider_id, model.id).is_promoted(),
+                    discovered.index(model),
+                )
+            )
+            accepted = accepted[: settings.max_candidates]
+            for rank, model in enumerate(accepted):
+                model_health = self.health.model(provider_id, model.id)
+                if model_health.is_in_cooldown():
+                    resolution.excluded.append(
+                        f"dynamic model '{provider_id}:{model.id}' in cooldown for "
+                        f"{model_health.seconds_until_available():.0f}s"
+                    )
+                    continue
+                for key in self._order_keys(provider, keys):
+                    resolution.candidates.append(
+                        Candidate(
+                            provider_id=provider_id,
+                            model_id=model.id,
+                            key=key,
+                            provider_priority=provider.priority,
+                            model_priority=100000 + rank,
+                            reason="dynamically discovered OpenAI-compatible model",
+                            dynamic=True,
+                        )
+                    )
+        return resolution
+
+
+def _model_suits_request(model: DiscoveredModel, payload: dict) -> bool:
+    if model.prompt_price is not None and model.completion_price is not None:
+        if model.prompt_price != 0 or model.completion_price != 0:
+            return False
+    if model.output_modalities and "text" not in model.output_modalities:
+        return False
+    requested_tokens = payload.get("max_tokens") or payload.get("max_completion_tokens")
+    if requested_tokens is not None and model.context_length is not None:
+        messages = payload.get("messages") or []
+        if model.context_length < int(requested_tokens) + len(messages) * 4:
+            return False
+    if payload.get("tools") and model.supported_parameters:
+        if "tools" not in model.supported_parameters and "tool_choice" not in model.supported_parameters:
+            return False
+    return True

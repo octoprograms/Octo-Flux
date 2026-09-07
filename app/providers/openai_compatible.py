@@ -10,13 +10,14 @@ NIM, Together, Cerebras, ...) this one class is sufficient.
 from __future__ import annotations
 
 import time
+import asyncio
 from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
 
 from app.models.provider import AuthenticationConfig, ProviderConfig
-from app.providers.base import UpstreamFailure, UpstreamSuccess
+from app.providers.base import DiscoveredModel, UpstreamFailure, UpstreamSuccess
 
 
 def _build_headers(auth: AuthenticationConfig, api_key: str, extra: dict[str, str]) -> dict[str, str]:
@@ -43,6 +44,10 @@ class OpenAICompatibleProvider:
         self._client = httpx.AsyncClient(
             base_url=config.base_url, limits=limits, timeout=timeout
         )
+        self._discovery_lock = asyncio.Lock()
+        self._discovered_models: list[DiscoveredModel] = []
+        self._discovery_at = 0.0
+        self._discovery_failure_at = 0.0
 
     async def chat_completion(
         self, *, model: str, payload: dict[str, Any], api_key: str, request_id: str
@@ -159,8 +164,70 @@ class OpenAICompatibleProvider:
             latency_ms=latency_ms,
         )
 
+    async def discover_models(self, *, api_key: str) -> list[DiscoveredModel]:
+        settings = self.config.dynamic_models
+        if not settings.enabled or not settings.endpoint:
+            return []
+
+        now = time.monotonic()
+        if self._discovered_models and now - self._discovery_at < settings.refresh_interval_seconds:
+            return list(self._discovered_models)
+        if self._discovery_failure_at and now - self._discovery_failure_at < min(settings.refresh_interval_seconds, 60):
+            return list(self._discovered_models)
+
+        async with self._discovery_lock:
+            now = time.monotonic()
+            if self._discovered_models and now - self._discovery_at < settings.refresh_interval_seconds:
+                return list(self._discovered_models)
+            if self._discovery_failure_at and now - self._discovery_failure_at < min(settings.refresh_interval_seconds, 60):
+                return list(self._discovered_models)
+
+            from app.observability.logging import log_event
+
+            log_event("dynamic_model_discovery_started", provider=self.config.id)
+            try:
+                headers = _build_headers(self.config.authentication, api_key, self.config.headers)
+                response = await self._client.get(settings.endpoint, headers=headers)
+                response.raise_for_status()
+                raw_models = response.json().get("data", [])
+                models = [_parse_discovered_model(item) for item in raw_models if isinstance(item, dict)]
+                models = [model for model in models if model is not None]
+                self._discovered_models = models
+                self._discovery_at = time.monotonic()
+                self._discovery_failure_at = 0.0
+                log_event("dynamic_model_discovery_succeeded", provider=self.config.id, discovered=len(models))
+            except Exception as exc:
+                self._discovery_failure_at = time.monotonic()
+                stale = time.monotonic() - self._discovery_at if self._discovery_at else None
+                if stale is not None and stale > settings.stale_after_seconds:
+                    self._discovered_models = []
+                log_event("dynamic_model_discovery_failed", level="warning", provider=self.config.id, error=str(exc)[:200])
+            return list(self._discovered_models)
+
     async def aclose(self) -> None:
         await self._client.aclose()
+
+
+def _parse_discovered_model(item: dict[str, Any]) -> DiscoveredModel | None:
+    model_id = item.get("id")
+    architecture = item.get("architecture") or {}
+    pricing = item.get("pricing") or {}
+    if not isinstance(model_id, str) or not model_id:
+        return None
+    try:
+        prompt_price = float(pricing["prompt"]) if pricing.get("prompt") is not None else None
+        completion_price = float(pricing["completion"]) if pricing.get("completion") is not None else None
+    except (TypeError, ValueError):
+        prompt_price = completion_price = None
+    return DiscoveredModel(
+        id=model_id,
+        context_length=item.get("context_length") if isinstance(item.get("context_length"), int) else None,
+        input_modalities=frozenset(architecture.get("input_modalities") or []),
+        output_modalities=frozenset(architecture.get("output_modalities") or []),
+        supported_parameters=frozenset(item.get("supported_parameters") or []),
+        prompt_price=prompt_price,
+        completion_price=completion_price,
+    )
 
 
 class UpstreamStreamError(Exception):

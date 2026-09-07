@@ -84,7 +84,7 @@ class Scheduler:
         self.health = health
         self.limits = limits
         self.usage = usage
-        self.router = Router(config, health, limits, usage)
+        self.router = Router(config, health, limits, usage, providers)
 
     def apply_failure(self, candidate: Candidate, category: ErrorCategory, retry_after: float | None) -> None:
         decision = decision_for(category)
@@ -109,6 +109,20 @@ class Scheduler:
             # still worth cooling the key down immediately.
             key_health = self.health.key(candidate.provider_id, candidate.key.name)
             key_health.record_cooldown(cooldown_seconds)
+
+        if decision.retryable and category not in (ErrorCategory.AUTHENTICATION_ERROR, ErrorCategory.AUTHORIZATION_ERROR):
+            model_health = self.health.model(candidate.provider_id, candidate.model_id)
+            model_cfg = provider_cfg.health
+            model_cooldown = retry_after or min(
+                model_cfg.model_max_cooldown_seconds,
+                model_cfg.model_cooldown_seconds * (2 ** model_health.consecutive_failures),
+            )
+            model_health.record_failure(category.value, model_cooldown, 1)
+            log_event(
+                "model_cooldown", level="warning", provider=candidate.provider_id,
+                model=candidate.model_id, category=category.value,
+                seconds=round(model_health.seconds_until_available(), 1),
+            )
 
         if category in (ErrorCategory.RATE_LIMITED, ErrorCategory.QUOTA_EXCEEDED):
             self.usage.record_rate_limited(candidate.provider_id)
@@ -159,7 +173,7 @@ class Scheduler:
         operation: str,
         call: Callable[[Any, Candidate], Awaitable[UpstreamSuccess | UpstreamFailure]],
     ) -> ChatCompletionResult:
-        resolution = self.router.resolve(requested_model, capability=capability)
+        resolution = await self.router.resolve_dynamic(requested_model, payload=payload, capability=capability)
         if not resolution.model_found:
             raise ClientFacingError(
                 404, f"The model '{requested_model}' does not exist or is not configured.", "model_not_found"
@@ -228,6 +242,7 @@ class Scheduler:
             if isinstance(result, UpstreamSuccess):
                 self.health.provider(candidate.provider_id).record_success()
                 self.health.key(candidate.provider_id, candidate.key.name).record_success()
+                self.health.model(candidate.provider_id, candidate.model_id).record_success(promote=candidate.dynamic)
                 self.usage.record_attempt(candidate.provider_id, candidate.model_id, candidate.key.name, True, result.latency_ms)
                 self.usage.record_tokens(
                     candidate.provider_id, candidate.model_id, candidate.key.name,

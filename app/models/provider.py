@@ -40,7 +40,17 @@ class HealthConfig(BaseModel):
     cooldown_seconds: int = Field(default=30, ge=1)
     # Long cooldown applied for quota_exceeded / daily-limit style errors.
     long_cooldown_seconds: int = Field(default=300, ge=1)
+    model_cooldown_seconds: int = Field(default=15, ge=1)
+    model_max_cooldown_seconds: int = Field(default=300, ge=1)
     check_interval_seconds: int = Field(default=43200, ge=300)
+
+
+class DynamicModelsConfig(BaseModel):
+    enabled: bool = False
+    endpoint: str = ""
+    max_candidates: int = Field(default=10, ge=1, le=100)
+    refresh_interval_seconds: int = Field(default=900, ge=60)
+    stale_after_seconds: int = Field(default=3600, ge=60)
 
 
 class KeyConfig(BaseModel):
@@ -96,6 +106,7 @@ class ProviderConfig(BaseModel):
     limits: LimitsConfig = Field(default_factory=LimitsConfig)
     retry: RetryConfig = Field(default_factory=RetryConfig)
     health: HealthConfig = Field(default_factory=HealthConfig)
+    dynamic_models: DynamicModelsConfig = Field(default_factory=DynamicModelsConfig)
 
     authentication: AuthenticationConfig = Field(default_factory=AuthenticationConfig)
     headers: dict[str, str] = Field(default_factory=dict)

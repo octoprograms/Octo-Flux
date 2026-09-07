@@ -45,7 +45,7 @@ async def create_chat_completion(body: ChatCompletionRequest, state: AppState = 
 
 
 async def _handle_streaming(state: AppState, requested_model: str, payload: dict, request_id: str):
-    resolution = state.scheduler.router.resolve(requested_model)
+    resolution = await state.scheduler.router.resolve_dynamic(requested_model, payload=payload)
     if not resolution.model_found:
         raise HTTPException(status_code=404, detail={"error": {"message": f"The model '{requested_model}' does not exist.", "type": "model_not_found"}})
     if not resolution.candidates:
@@ -99,6 +99,7 @@ async def _handle_streaming(state: AppState, requested_model: str, payload: dict
         # output (never duplicate/replay tokens onto a different provider).
         state.health.provider(candidate.provider_id).record_success()
         state.health.key(candidate.provider_id, candidate.key.name).record_success()
+        state.health.model(candidate.provider_id, candidate.model_id).record_success(promote=candidate.dynamic)
         log_event(
             "upstream_stream_started", request_id=request_id, provider=candidate.provider_id,
             model=candidate.model_id, key=candidate.key.name, attempt=attempt_number,

@@ -57,6 +57,13 @@ providers:
     priority: 10
     key_selection: round_robin
 
+    dynamic_models:
+      enabled: true
+      endpoint: "https://openrouter.ai/api/v1/models?max_price=0&order=intelligence-high-to-low&output_modalities=text"
+      max_candidates: 10
+      refresh_interval_seconds: 900
+      stale_after_seconds: 3600
+
     keys:
       - name: openrouter-primary
         value: "${OPENROUTER_API_KEY_1}"

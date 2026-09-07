@@ -25,6 +25,17 @@ class UpstreamFailure:
     headers: httpx.Headers | None = None
 
 
+@dataclass(frozen=True)
+class DiscoveredModel:
+    id: str
+    context_length: int | None = None
+    input_modalities: frozenset[str] = frozenset()
+    output_modalities: frozenset[str] = frozenset()
+    supported_parameters: frozenset[str] = frozenset()
+    prompt_price: float | None = None
+    completion_price: float | None = None
+
+
 class ProviderAdapter(Protocol):
     """A provider adapter knows how to speak to one upstream base_url."""
 
@@ -47,5 +58,7 @@ class ProviderAdapter(Protocol):
     async def list_models(self) -> list[str]: ...
 
     async def health_check(self, *, api_key: str) -> UpstreamSuccess | UpstreamFailure: ...
+
+    async def discover_models(self, *, api_key: str) -> list[DiscoveredModel]: ...
 
     async def aclose(self) -> None: ...

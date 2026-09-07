@@ -8,11 +8,26 @@
 
 --- 
 
+<div align="center">
+
 [![OpenAI Compatible](https://img.shields.io/badge/OpenAI-Compatible-412991?logo=openai&logoColor=white)](README.md)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-005571?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![Docker](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
-[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-Support%20the%20Project-yellow?logo=buymeacoffee&logoColor=white)](https://www.buymeacoffee.com/octoprograms)
+
+</div>
+
+<div align="center">
+
+<a href="https://buymeacoffee.com/octoprograms" target="_blank">
+  <img
+    src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png"
+    alt="Buy Me a Coffee"
+    style="height: 60px !important; width: 217px !important;"
+  >
+</a>
+
+</div>
 
 **OctoFlux is an OpenAI-compatible LLM gateway with intelligent routing, key rotation, rate limiting, health checks, and provider failover.**
 
@@ -88,6 +103,16 @@ See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the design rationale, trade-offs, a
   * Cooldown tracking
   * Background `/models` probes
   * Manual provider/key testing
+
+OpenRouter can optionally discover free text models at runtime. Configure
+`providers.openrouter.dynamic_models` with `enabled`, the filtered OpenRouter
+`/models` endpoint, `max_candidates`, and `refresh_interval_seconds`. Discovery
+is cached in memory and keeps the last known list through short endpoint
+failures. Discovered models are used by `model: "auto"` after configured
+candidates. A failed model receives a temporary model-level cooldown, while a
+successful model is marked healthy again. Configured models remain usable even
+when absent from the model list because real completions are authoritative.
+Set `dynamic_models.enabled: false` to disable it.
 
 * **Operational visibility**
 
@@ -1197,7 +1222,17 @@ See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the complete list of design non-goa
 
 If OctoFlux is useful to you, consider supporting its development:
 
-**[☕ Buy Me a Coffee](https://buymeacoffee.com/octoprograms)**
+<div align="left">
+
+<a href="https://buymeacoffee.com/octoprograms" target="_blank">
+  <img
+    src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png"
+    alt="Buy Me a Coffee"
+    style="height: 60px !important; width: 217px !important;"
+  >
+</a>
+
+</div>
 
 ---
 
