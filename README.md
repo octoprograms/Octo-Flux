@@ -12,7 +12,6 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-005571?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![Docker](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
-[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-Support%20the%20Project-yellow?logo=buymeacoffee&logoColor=white)](https://www.buymeacoffee.com/octoprograms)
 
 **OctoFlux is an OpenAI-compatible LLM gateway with intelligent routing, key rotation, rate limiting, health checks, and provider failover.**
 
@@ -1197,7 +1196,13 @@ See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the complete list of design non-goa
 
 If OctoFlux is useful to you, consider supporting its development:
 
-**[☕ Buy Me a Coffee](https://buymeacoffee.com/octoprograms)**
+<div align="center">
+
+<a href="https://buymeacoffee.com/octoprograms" target="_blank">
+  <img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-Support%20the%20Project-yellow?logo=buymeacoffee&logoColor=white&style=for-the-badge" alt="Buy Me a Coffee" height="56">
+</a>
+
+</div>
 
 ---
 
