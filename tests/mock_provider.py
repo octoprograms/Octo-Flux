@@ -19,6 +19,18 @@ def ok_response(content: str = "hello", model: str = "model-a") -> httpx.Respons
     )
 
 
+def embedding_response(model: str = "model-embed") -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={
+            "object": "list",
+            "data": [{"object": "embedding", "embedding": [0.1, 0.2], "index": 0}],
+            "model": model,
+            "usage": {"prompt_tokens": 2, "total_tokens": 2},
+        },
+    )
+
+
 def error_response(status_code: int, message: str = "error", error_type: str = "error", headers: dict | None = None) -> httpx.Response:
     return httpx.Response(
         status_code,

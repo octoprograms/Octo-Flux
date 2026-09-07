@@ -14,6 +14,7 @@ import asyncio
 import random
 import time
 from dataclasses import dataclass
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from app.core.errors import (
@@ -117,15 +118,62 @@ class Scheduler:
     async def execute_chat_completion(
         self, *, requested_model: str, payload: dict[str, Any], request_id: str
     ) -> ChatCompletionResult:
-        resolution = self.router.resolve(requested_model)
+        return await self._execute_operation(
+            requested_model=requested_model,
+            payload=payload,
+            request_id=request_id,
+            capability="chat",
+            operation="chat.completions",
+            call=lambda adapter, candidate: adapter.chat_completion(
+                model=candidate.model_id,
+                payload=payload,
+                api_key=candidate.key.value,
+                request_id=request_id,
+            ),
+        )
+
+    async def execute_embeddings(
+        self, *, requested_model: str, payload: dict[str, Any], request_id: str
+    ) -> ChatCompletionResult:
+        return await self._execute_operation(
+            requested_model=requested_model,
+            payload=payload,
+            request_id=request_id,
+            capability="embeddings",
+            operation="embeddings",
+            call=lambda adapter, candidate: adapter.embeddings(
+                model=candidate.model_id,
+                payload=payload,
+                api_key=candidate.key.value,
+                request_id=request_id,
+            ),
+        )
+
+    async def _execute_operation(
+        self,
+        *,
+        requested_model: str,
+        payload: dict[str, Any],
+        request_id: str,
+        capability: str,
+        operation: str,
+        call: Callable[[Any, Candidate], Awaitable[UpstreamSuccess | UpstreamFailure]],
+    ) -> ChatCompletionResult:
+        resolution = self.router.resolve(requested_model, capability=capability)
         if not resolution.model_found:
             raise ClientFacingError(
                 404, f"The model '{requested_model}' does not exist or is not configured.", "model_not_found"
             )
+        if not resolution.capability_found:
+            if requested_model == "auto":
+                message = f"No {capability}-capable model is configured."
+            else:
+                message = f"Model '{requested_model}' does not support {capability}."
+            raise ClientFacingError(400, message, "unsupported_operation")
         if not resolution.candidates:
             log_event(
                 "no_candidates_available", level="warning", request_id=request_id,
-                model=requested_model, excluded=resolution.excluded,
+                operation=operation, model=requested_model, excluded=resolution.excluded,
             )
             raise ClientFacingError(
                 503,
@@ -154,6 +202,7 @@ class Scheduler:
 
             log_event(
                 "routing_decision", request_id=request_id, attempt=attempt_number,
+                operation=operation,
                 provider=candidate.provider_id, model=candidate.model_id,
                 key=candidate.key.name, reason=candidate.reason,
             )
@@ -165,9 +214,12 @@ class Scheduler:
                 key_limit_state.record_request_start()
 
             adapter = self.providers.adapter(candidate.provider_id)
-            result = await adapter.chat_completion(
-                model=candidate.model_id, payload=payload, api_key=candidate.key.value, request_id=request_id
+            log_event(
+                "upstream_request_started", request_id=request_id, operation=operation,
+                provider=candidate.provider_id, model=candidate.model_id, key=candidate.key.name,
+                attempt=attempt_number,
             )
+            result = await call(adapter, candidate)
 
             provider_limit_state.record_request_end()
             if key_limit_state is not None:
@@ -184,7 +236,8 @@ class Scheduler:
                 trace.append(AttemptTrace(candidate.provider_id, candidate.model_id, candidate.key.name, "success", result.latency_ms))
                 log_event(
                     "upstream_success", request_id=request_id, provider=candidate.provider_id,
-                    model=candidate.model_id, key=candidate.key.name, latency_ms=round(result.latency_ms, 1),
+                    operation=operation, model=candidate.model_id, key=candidate.key.name,
+                    latency_ms=round(result.latency_ms, 1),
                     attempt=attempt_number,
                 )
                 return ChatCompletionResult(
@@ -212,7 +265,8 @@ class Scheduler:
             decision = decision_for(category)
             log_event(
                 "upstream_failure", level="warning", request_id=request_id, provider=candidate.provider_id,
-                model=candidate.model_id, key=candidate.key.name, category=category.value,
+                operation=operation, model=candidate.model_id, key=candidate.key.name,
+                category=category.value,
                 status_code=result.status_code, attempt=attempt_number, retryable=decision.retryable,
             )
 

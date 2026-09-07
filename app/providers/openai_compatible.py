@@ -76,6 +76,37 @@ class OpenAICompatibleProvider:
             output_tokens=int(usage.get("completion_tokens") or usage.get("output_tokens") or 0),
         )
 
+    async def embeddings(
+        self, *, model: str, payload: dict[str, Any], api_key: str, request_id: str
+    ) -> UpstreamSuccess | UpstreamFailure:
+        body = {**payload, "model": model}
+        headers = _build_headers(self.config.authentication, api_key, self.config.headers)
+        headers["X-Request-Id"] = request_id
+        start = time.perf_counter()
+        try:
+            resp = await self._client.post("/embeddings", json=body, headers=headers)
+        except Exception as exc:
+            latency_ms = (time.perf_counter() - start) * 1000
+            return UpstreamFailure(status_code=None, body_text=str(exc), latency_ms=latency_ms, exception=exc)
+
+        latency_ms = (time.perf_counter() - start) * 1000
+        if resp.status_code >= 400:
+            return UpstreamFailure(
+                status_code=resp.status_code,
+                body_text=resp.text,
+                latency_ms=latency_ms,
+                headers=resp.headers,
+            )
+
+        data = resp.json()
+        usage = data.get("usage") or {}
+        return UpstreamSuccess(
+            status_code=resp.status_code,
+            json_body=data,
+            latency_ms=latency_ms,
+            input_tokens=int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0),
+        )
+
     async def chat_completion_stream(
         self, *, model: str, payload: dict[str, Any], api_key: str, request_id: str
     ) -> AsyncIterator[bytes]:

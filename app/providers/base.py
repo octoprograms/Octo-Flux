@@ -32,6 +32,10 @@ class ProviderAdapter(Protocol):
         self, *, model: str, payload: dict[str, Any], api_key: str, request_id: str
     ) -> UpstreamSuccess | UpstreamFailure: ...
 
+    async def embeddings(
+        self, *, model: str, payload: dict[str, Any], api_key: str, request_id: str
+    ) -> UpstreamSuccess | UpstreamFailure: ...
+
     def chat_completion_stream(
         self, *, model: str, payload: dict[str, Any], api_key: str, request_id: str
     ) -> AsyncIterator[bytes]:

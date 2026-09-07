@@ -7,7 +7,7 @@ from fastapi import FastAPI
 
 from app.admin import status as admin_status
 from app.admin import ui as admin_ui
-from app.api import chat, models, responses
+from app.api import chat, embeddings, models, responses
 from app.core.app_state import AppState
 from app.core.config import ConfigError, load_config_from_env
 from app.observability.logging import configure_logging, log_event
@@ -38,6 +38,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_ui.router)
     app.include_router(models.router)
     app.include_router(chat.router)
+    app.include_router(embeddings.router)
     app.include_router(responses.router)
     app.include_router(admin_status.router)
     return app

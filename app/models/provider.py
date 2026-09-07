@@ -61,8 +61,20 @@ class ModelConfig(BaseModel):
     id: str
     enabled: bool = True
     priority: int = 100
+    # Existing model entries are chat models unless they opt into another
+    # operation explicitly. This keeps older configurations unchanged.
+    capabilities: list[Literal["chat", "embeddings"]] = Field(default_factory=lambda: ["chat"])
     # Optional: aliases this model participates in are declared globally
     # (see AliasConfig) rather than here, to keep a single source of truth.
+
+    @field_validator("capabilities")
+    @classmethod
+    def capabilities_must_be_unique_and_nonempty(cls, value: list[str]) -> list[str]:
+        if not value:
+            raise ValueError("at least one model capability is required")
+        if len(value) != len(set(value)):
+            raise ValueError("model capabilities must be unique")
+        return value
 
 
 class AuthenticationConfig(BaseModel):

@@ -34,6 +34,7 @@ class RouteResolution:
     candidates: list[Candidate]
     excluded: list[str] = field(default_factory=list)  # human-readable exclusion reasons
     model_found: bool = True
+    capability_found: bool = True
 
 
 class _RoundRobinCursor:
@@ -69,8 +70,10 @@ class Router:
         start = self._rr.next_index(provider.id, len(keys))
         return keys[start:] + keys[:start]
 
-    def _provider_model_pairs(self, requested_model: str) -> tuple[list[tuple[str, str]], bool]:
-        """Returns (list of (provider_id, model_id) in priority order, model_found)."""
+    def _provider_model_pairs(
+        self, requested_model: str, capability: str
+    ) -> tuple[list[tuple[str, str]], bool, bool]:
+        """Returns pairs plus whether the model and capability were found."""
         enabled = self.config.enabled_providers()
 
         if requested_model == "auto":
@@ -78,20 +81,23 @@ class Router:
                 (pid, m.id)
                 for pid, p in sorted(enabled.items(), key=lambda kv: kv[1].priority)
                 for m in sorted(p.models, key=lambda m: m.priority)
-                if m.enabled
+                if m.enabled and capability in m.capabilities
             ]
-            return pairs, True
+            return pairs, True, bool(pairs)
 
         if requested_model in self.config.aliases:
             pairs = []
+            alias_has_model = False
             for target in self.config.aliases[requested_model]:
                 p = enabled.get(target.provider)
                 if p is None:
                     continue
                 model = next((m for m in p.models if m.id == target.model and m.enabled), None)
                 if model is not None:
+                    alias_has_model = True
+                if model is not None and capability in model.capabilities:
                     pairs.append((p.id, model.id))
-            return pairs, len(pairs) > 0
+            return pairs, alias_has_model, bool(pairs)
 
         # Exact model id — search across all enabled providers (this is
         # provider *failover* for an identical model, not model substitution).
@@ -99,18 +105,27 @@ class Router:
             (pid, m.id)
             for pid, p in sorted(enabled.items(), key=lambda kv: kv[1].priority)
             for m in p.models
-            if m.enabled and m.id == requested_model
+            if m.enabled and m.id == requested_model and capability in m.capabilities
         ]
-        return pairs, len(pairs) > 0
+        model_exists = any(
+            m.enabled and m.id == requested_model
+            for p in enabled.values()
+            for m in p.models
+        )
+        return pairs, model_exists, bool(pairs)
 
-    def resolve(self, requested_model: str) -> RouteResolution:
-        pairs, model_found = self._provider_model_pairs(requested_model)
+    def resolve(self, requested_model: str, capability: str = "chat") -> RouteResolution:
+        pairs, model_found, capability_found = self._provider_model_pairs(requested_model, capability)
         candidates: list[Candidate] = []
         excluded: list[str] = []
 
         if not model_found:
             excluded.append(f"model '{requested_model}' not found in any enabled provider or alias")
-            return RouteResolution(candidates=[], excluded=excluded, model_found=False)
+            return RouteResolution(candidates=[], excluded=excluded, model_found=False, capability_found=False)
+
+        if not capability_found:
+            excluded.append(f"model '{requested_model}' has no enabled '{capability}' capability")
+            return RouteResolution(candidates=[], excluded=excluded, model_found=True, capability_found=False)
 
         for provider_id, model_id in pairs:
             provider = self.config.providers[provider_id]

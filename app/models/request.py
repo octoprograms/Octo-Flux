@@ -27,6 +27,16 @@ class ChatCompletionRequest(BaseModel):
     response_format: dict[str, Any] | None = None
 
 
+class EmbeddingsRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    model: str
+    input: str | list[str] | list[int]
+    encoding_format: str | None = None
+    dimensions: int | None = None
+    user: str | None = None
+
+
 class ErrorBody(BaseModel):
     message: str
     type: str
@@ -42,6 +52,7 @@ class ModelInfo(BaseModel):
     id: str
     object: str = "model"
     owned_by: str = "OctoFlux"
+    capabilities: list[str] = Field(default_factory=list)
 
 
 class ModelListResponse(BaseModel):

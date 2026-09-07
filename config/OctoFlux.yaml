@@ -81,6 +81,8 @@ providers:
       - id: liquid/lfm-2.5-embedding-350m:free
         enabled: true
         priority: 50
+        capabilities:
+          - embeddings
 
     limits:
       requests_per_minute: 20

@@ -17,13 +17,20 @@ async def list_models(state: AppState = Depends(get_state)) -> ModelListResponse
 
     for alias in state.config.aliases:
         if alias not in seen:
-            models.append(ModelInfo(id=alias, owned_by="OctoFlux-alias"))
+            capabilities = sorted({
+                capability
+                for target in state.config.aliases[alias]
+                for provider_model in state.config.providers.get(target.provider, []).models
+                if provider_model.id == target.model and provider_model.enabled
+                for capability in provider_model.capabilities
+            })
+            models.append(ModelInfo(id=alias, owned_by="OctoFlux-alias", capabilities=capabilities))
             seen.add(alias)
 
     for provider in state.config.enabled_providers().values():
         for m in provider.models:
             if m.enabled and m.id not in seen:
-                models.append(ModelInfo(id=m.id, owned_by=provider.id))
+                models.append(ModelInfo(id=m.id, owned_by=provider.id, capabilities=m.capabilities))
                 seen.add(m.id)
 
     return ModelListResponse(data=models)

@@ -51,6 +51,7 @@ See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the design rationale, trade-offs, a
 * **OpenAI-compatible API**
 
   * `POST /v1/chat/completions`
+  * `POST /v1/embeddings`
   * `POST /v1/responses`
   * `GET /v1/models`
   * `GET /v1/aliases`
@@ -63,6 +64,7 @@ See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the design rationale, trade-offs, a
   * Local rate-limit enforcement
   * Model aliases
   * Automatic routing with `model: "auto"`
+  * Capability-aware model routing for chat and embeddings
 
 * **Error-aware failover**
 
@@ -419,6 +421,27 @@ OctoFlux validates the configuration at startup and fails fast on errors such as
 * Providers without enabled keys
 * Providers without enabled models
 * Aliases referencing unknown providers or models
+
+## Embeddings and Model Capabilities
+
+Models without a `capabilities` field remain chat models for backward
+compatibility. Mark embedding models explicitly so they are only selected by
+`POST /v1/embeddings`:
+
+```yaml
+models:
+  - id: provider/embedding-model
+    enabled: true
+    priority: 10
+    capabilities:
+      - embeddings
+```
+
+Use `capabilities: [chat, embeddings]` for a model that supports both
+operations. `model: auto` and aliases are filtered by the requested operation,
+so chat-only models cannot receive embedding requests. Embedding fallback is
+supported, but vectors from different embedding models may occupy incompatible
+vector spaces; keep a stable model for an existing vector index.
 
 ---
 
@@ -1117,6 +1140,7 @@ The benchmark uses a mocked upstream to isolate OctoFlux's internal routing and 
 | Method | Endpoint                                      | Purpose                            |
 | ------ | --------------------------------------------- | ---------------------------------- |
 | `POST` | `/v1/chat/completions`                        | OpenAI-compatible chat completions |
+| `POST` | `/v1/embeddings`                              | OpenAI-compatible embeddings      |
 | `POST` | `/v1/responses`                               | Responses API compatibility layer  |
 | `GET`  | `/v1/models`                                  | List configured models and aliases |
 | `GET`  | `/v1/aliases`                                 | Inspect alias targets              |
