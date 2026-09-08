@@ -211,6 +211,16 @@ class Router:
                 continue
             discovered = await adapter.discover_models(api_key=keys[0].value)
             accepted = [model for model in discovered if _model_suits_request(model, payload)]
+            unique_models: dict[str, DiscoveredModel] = {}
+            for model in accepted:
+                unique_models.setdefault(model.id, model)
+            accepted = list(unique_models.values())
+            existing_models = {
+                candidate.model_id
+                for candidate in resolution.candidates
+                if candidate.provider_id == provider_id
+            }
+            accepted = [model for model in accepted if model.id not in existing_models]
             accepted.sort(
                 key=lambda model: (
                     not self.health.model(provider_id, model.id).is_promoted(),
@@ -242,6 +252,8 @@ class Router:
 
 
 def _model_suits_request(model: DiscoveredModel, payload: dict) -> bool:
+    if model.deprecated:
+        return False
     if model.prompt_price is not None and model.completion_price is not None:
         if model.prompt_price != 0 or model.completion_price != 0:
             return False

@@ -34,6 +34,7 @@ class DiscoveredModel:
     supported_parameters: frozenset[str] = frozenset()
     prompt_price: float | None = None
     completion_price: float | None = None
+    deprecated: bool = False
 
 
 class ProviderAdapter(Protocol):

@@ -14,7 +14,11 @@ from app.models.provider import OctoFluxConfig
 DISCOVERY_URL = "http://openrouter.test/v1/models?max_price=0&order=intelligence-high-to-low&output_modalities=text"
 
 
-def dynamic_config(**dynamic_overrides) -> OctoFluxConfig:
+def dynamic_config(*, keys=None, **dynamic_overrides) -> OctoFluxConfig:
+    keys = keys or [{"name": "primary", "value": "key"}]
+    key_yaml = "\n".join(
+        f"            - name: {key['name']}\n              value: {key['value']}" for key in keys
+    )
     dynamic = {
         "enabled": True,
         "endpoint": DISCOVERY_URL,
@@ -32,7 +36,8 @@ def dynamic_config(**dynamic_overrides) -> OctoFluxConfig:
         providers:
           openrouter:
             base_url: http://openrouter.test/v1
-            keys: [{{name: primary, value: key}}]
+            keys:
+{key_yaml}
             models: [{{id: configured-model, priority: 10}}]
             dynamic_models: {dynamic!r}
         """
@@ -128,6 +133,108 @@ async def test_dynamic_model_failure_fails_over_and_enters_model_cooldown():
 
     next_resolution = state.scheduler.router.resolve("auto")
     assert all(candidate.model_id != "top/model:free" for candidate in next_resolution.candidates)
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_model_not_found_skips_remaining_keys_for_logical_model():
+    respx.get(DISCOVERY_URL).mock(return_value=discovery_response())
+    models_seen: list[tuple[str, str]] = []
+
+    def completion(request: httpx.Request) -> httpx.Response:
+        body = request.content.decode()
+        if "top/model:free" in body:
+            model = "top/model:free"
+        elif "configured-model" in body:
+            model = "configured-model"
+        else:
+            model = "second/model:free"
+        models_seen.append((model, request.headers.get("authorization", "")))
+        if model in {"top/model:free", "configured-model"}:
+            return httpx.Response(404, json={"error": {"code": "model_not_found"}})
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    completions = respx.post("http://openrouter.test/v1/chat/completions").mock(side_effect=completion)
+    state = AppState.build(
+        dynamic_config(
+            keys=[
+                {"name": "primary", "value": "key-1"},
+                {"name": "secondary", "value": "key-2"},
+                {"name": "tertiary", "value": "key-3"},
+            ]
+        )
+    )
+
+    result = await state.scheduler.execute_chat_completion(
+        requested_model="auto", payload={"messages": []}, request_id="model-404"
+    )
+
+    assert result.model_id == "second/model:free"
+    assert [model for model, _ in models_seen].count("top/model:free") == 1
+    assert state.health.model("openrouter", "top/model:free").is_in_cooldown()
+    assert completions.call_count == 3
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_rate_limit_can_fail_over_to_next_key_for_same_model():
+    respx.get(DISCOVERY_URL).mock(return_value=discovery_response())
+    seen: list[str] = []
+
+    def completion(request: httpx.Request) -> httpx.Response:
+        body = request.content.decode()
+        auth = request.headers.get("authorization", "")
+        if "configured-model" in body:
+            return httpx.Response(404, json={"error": {"code": "model_not_found"}})
+        if "top/model:free" in body:
+            seen.append(auth)
+            if len(seen) == 1:
+                return httpx.Response(429, json={"error": {"message": "rate limit"}})
+            return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+        return httpx.Response(200, json={"choices": [{"message": {"content": "fallback"}}]})
+
+    respx.post("http://openrouter.test/v1/chat/completions").mock(side_effect=completion)
+    state = AppState.build(
+        dynamic_config(
+            keys=[
+                {"name": "primary", "value": "key-1"},
+                {"name": "secondary", "value": "key-2"},
+            ]
+        )
+    )
+
+    result = await state.scheduler.execute_chat_completion(
+        requested_model="auto", payload={"messages": []}, request_id="key-429"
+    )
+
+    assert result.model_id == "top/model:free"
+    assert len(seen) == 2
+    assert len(set(seen)) == 2
+    assert not state.health.model("openrouter", "top/model:free").is_in_cooldown()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_dynamic_discovery_deduplicates_logical_model_ids():
+    response = discovery_response()
+    response.json()["data"].insert(1, response.json()["data"][0])
+    respx.get(DISCOVERY_URL).mock(return_value=response)
+    state = AppState.build(dynamic_config(max_candidates=3))
+
+    resolution = await state.scheduler.router.resolve_dynamic("auto")
+    dynamic_ids = [candidate.model_id for candidate in resolution.candidates if candidate.dynamic]
+
+    assert dynamic_ids == ["top/model:free", "second/model:free"]
+
+
+@pytest.mark.asyncio
+async def test_model_cooldown_expires():
+    state = AppState.build(dynamic_config())
+    health = state.health.model("openrouter", "temporary-model")
+    health.record_cooldown(0.01)
+    await asyncio.sleep(0.02)
+
+    assert not health.is_in_cooldown()
 
 
 @pytest.mark.asyncio

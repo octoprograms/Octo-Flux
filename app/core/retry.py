@@ -19,6 +19,7 @@ from typing import Any
 
 from app.core.errors import (
     ErrorCategory,
+    FailureScope,
     classify_exception,
     classify_http_status,
     decision_for,
@@ -86,7 +87,7 @@ class Scheduler:
         self.usage = usage
         self.router = Router(config, health, limits, usage, providers)
 
-    def apply_failure(self, candidate: Candidate, category: ErrorCategory, retry_after: float | None) -> None:
+    def apply_failure(self, candidate: Candidate, category: ErrorCategory, retry_after: float | None) -> FailureScope:
         decision = decision_for(category)
         provider_cfg = self.config.providers[candidate.provider_id]
 
@@ -110,7 +111,16 @@ class Scheduler:
             key_health = self.health.key(candidate.provider_id, candidate.key.name)
             key_health.record_cooldown(cooldown_seconds)
 
-        if decision.retryable and category not in (ErrorCategory.AUTHENTICATION_ERROR, ErrorCategory.AUTHORIZATION_ERROR):
+        if decision.retryable and (
+            decision.scope == FailureScope.MODEL
+            or category in (
+                ErrorCategory.SERVER_ERROR,
+                ErrorCategory.TIMEOUT,
+                ErrorCategory.CONNECTION_ERROR,
+                ErrorCategory.SERVICE_UNAVAILABLE,
+                ErrorCategory.OVERLOADED,
+            )
+        ):
             model_health = self.health.model(candidate.provider_id, candidate.model_id)
             model_cfg = provider_cfg.health
             model_cooldown = retry_after or min(
@@ -124,10 +134,28 @@ class Scheduler:
                 seconds=round(model_health.seconds_until_available(), 1),
             )
 
+        scope = decision.scope
+        if category in (ErrorCategory.AUTHENTICATION_ERROR, ErrorCategory.AUTHORIZATION_ERROR):
+            enabled_keys = [key for key in provider_cfg.keys if key.enabled]
+            provider_auth_failed = bool(enabled_keys) and all(
+                (
+                    self.health.key(candidate.provider_id, key.name).last_failure_reason
+                    in (
+                        ErrorCategory.AUTHENTICATION_ERROR.value,
+                        ErrorCategory.AUTHORIZATION_ERROR.value,
+                    )
+                )
+                for key in enabled_keys
+            )
+            if provider_auth_failed:
+                self.health.provider(candidate.provider_id).record_cooldown(cooldown_seconds)
+                scope = FailureScope.PROVIDER
+
         if category in (ErrorCategory.RATE_LIMITED, ErrorCategory.QUOTA_EXCEEDED):
             self.usage.record_rate_limited(candidate.provider_id)
         if category == ErrorCategory.TIMEOUT:
             self.usage.record_timeout(candidate.provider_id)
+        return scope
 
     async def execute_chat_completion(
         self, *, requested_model: str, payload: dict[str, Any], request_id: str
@@ -201,10 +229,16 @@ class Scheduler:
         trace: list[AttemptTrace] = []
         attempt_number = 0
         last_error: ClientFacingError | None = None
+        skipped_models: set[tuple[str, str]] = set()
+        skipped_providers: set[str] = set()
 
         for candidate in resolution.candidates:
             target_key = (candidate.provider_id, candidate.model_id, candidate.key.name)
-            if target_key in attempted:
+            if (
+                target_key in attempted
+                or candidate.provider_id in skipped_providers
+                or (candidate.provider_id, candidate.model_id) in skipped_models
+            ):
                 continue
             if attempt_number >= max_attempts:
                 break
@@ -275,7 +309,11 @@ class Scheduler:
                 retry_after = parse_retry_after(result.headers) if result.headers is not None else None
 
             trace.append(AttemptTrace(candidate.provider_id, candidate.model_id, candidate.key.name, category.value, result.latency_ms))
-            self.apply_failure(candidate, category, retry_after)
+            failure_scope = self.apply_failure(candidate, category, retry_after)
+            if failure_scope == FailureScope.MODEL:
+                skipped_models.add((candidate.provider_id, candidate.model_id))
+            elif failure_scope == FailureScope.PROVIDER:
+                skipped_providers.add(candidate.provider_id)
 
             decision = decision_for(category)
             log_event(
@@ -304,6 +342,10 @@ class Scheduler:
         # Exhausted candidates or attempt budget.
         if last_error is not None:
             last_error.tried = [f"{t.provider_id}/{t.model_id}:{t.key_name}={t.outcome}" for t in trace]
+            if last_error.error_type == ErrorCategory.MODEL_NOT_FOUND.value:
+                last_error.status_code = 503
+                last_error.message = "No available model could complete the request."
+                last_error.error_type = "model_unavailable"
             raise last_error
         raise ClientFacingError(503, "No candidates could be attempted (limits/cooldowns).", "service_unavailable")
 

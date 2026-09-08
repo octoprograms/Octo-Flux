@@ -11,6 +11,8 @@ from app.core.errors import ErrorCategory, classify_exception, classify_http_sta
     [
         (401, "", ErrorCategory.AUTHENTICATION_ERROR),
         (403, "", ErrorCategory.AUTHORIZATION_ERROR),
+        (403, "This model is not available for free users", ErrorCategory.MODEL_NOT_FOUND),
+        (403, "No endpoint available for this model", ErrorCategory.MODEL_NOT_FOUND),
         (404, "", ErrorCategory.MODEL_NOT_FOUND),
         (408, "", ErrorCategory.TIMEOUT),
         (429, "rate limit exceeded", ErrorCategory.RATE_LIMITED),
@@ -57,8 +59,12 @@ def test_retry_decision_matrix(category, retryable):
 def test_authentication_error_does_not_retry_same_key():
     d = decision_for(ErrorCategory.AUTHENTICATION_ERROR)
     assert d.retry_same_key is False
-    assert d.retry_other_key is False
+    assert d.retry_other_key is True
     assert d.retry_other_provider is True
+
+
+def test_generic_authorization_error_remains_key_scoped():
+    assert decision_for(ErrorCategory.AUTHORIZATION_ERROR).scope.value == "key"
 
 
 def test_invalid_request_never_triggers_provider_failover():

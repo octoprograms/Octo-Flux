@@ -40,6 +40,76 @@ async def test_provider_a_429_fails_over_to_provider_b(app_state: AppState):
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_health_models_success_but_completion_entitlement_fails_and_falls_back(app_state: AppState):
+    health_routes = [
+        respx.get("http://alpha.test/v1/models").mock(return_value=httpx.Response(200, json={"data": []})),
+        respx.get("http://beta.test/v1/models").mock(return_value=httpx.Response(200, json={"data": []})),
+    ]
+    alpha_completion = respx.post("http://alpha.test/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            403,
+            json={"error": {"message": "This model is not available for free users"}},
+        )
+    )
+    beta_completion = respx.post("http://beta.test/v1/chat/completions").mock(return_value=ok_response("beta wins"))
+
+    await app_state.health_monitor.check_once()
+    result = await app_state.scheduler.execute_chat_completion(
+        requested_model="model-a", payload={"messages": []}, request_id="entitlement-1"
+    )
+
+    assert result.provider_id == "beta"
+    assert health_routes[0].call_count == 2
+    assert health_routes[1].call_count == 1
+    assert alpha_completion.call_count == 1
+    assert beta_completion.call_count == 1
+    assert app_state.health.model("alpha", "model-a").is_in_cooldown()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_key_specific_auth_failure_retries_same_model_with_next_key(app_state: AppState):
+    seen_auth: list[str] = []
+
+    def alpha_completion(request: httpx.Request) -> httpx.Response:
+        auth = request.headers.get("authorization", "")
+        seen_auth.append(auth)
+        if auth == "Bearer k1":
+            return httpx.Response(401, json={"error": {"message": "invalid api key"}})
+        return ok_response("alpha key two")
+
+    route = respx.post("http://alpha.test/v1/chat/completions").mock(side_effect=alpha_completion)
+    result = await app_state.scheduler.execute_chat_completion(
+        requested_model="model-a", payload={"messages": []}, request_id="key-auth-1"
+    )
+
+    assert result.provider_id == "alpha"
+    assert route.call_count == 2
+    assert set(seen_auth) == {"Bearer k1", "Bearer k2"}
+    assert not app_state.health.model("alpha", "model-a").is_in_cooldown()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_provider_wide_auth_failure_skips_remaining_provider_candidates(app_state: AppState):
+    alpha_route = respx.post("http://alpha.test/v1/chat/completions").mock(
+        return_value=httpx.Response(401, json={"error": {"message": "invalid api key"}})
+    )
+    beta_route = respx.post("http://beta.test/v1/chat/completions").mock(return_value=ok_response("beta wins"))
+
+    result = await app_state.scheduler.execute_chat_completion(
+        requested_model="model-a", payload={"messages": []}, request_id="provider-auth-1"
+    )
+
+    assert result.provider_id == "beta"
+    assert alpha_route.call_count == 2
+    assert beta_route.call_count == 1
+    assert app_state.health.provider("alpha").is_in_cooldown()
+    assert all("k1" not in attempt.key_name and "k2" not in attempt.key_name for attempt in result.trace)
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_key_exhausted_then_second_key_fails_then_third_provider_succeeds(app_state: AppState):
     # alpha-key-1 -> 429 (rate limited), alpha-key-2 -> 401 (auth failure), beta -> success
     call_count = {"n": 0}

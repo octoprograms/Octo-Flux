@@ -108,6 +108,23 @@ def test_admin_provider_key_test_reports_upstream_failure(app_state: AppState):
     assert app_state.health.key("alpha", "alpha-key-1").last_check_ok is False
 
 
+@respx.mock
+@pytest.mark.asyncio
+async def test_health_and_completion_use_same_key_auth_but_different_endpoints(app_state: AppState):
+    health = respx.get("http://alpha.test/v1/models").mock(return_value=httpx.Response(200, json={"data": []}))
+    completion = respx.post("http://alpha.test/v1/chat/completions").mock(return_value=ok_response())
+
+    await app_state.health_monitor.check_key("alpha", "alpha-key-1", "k1")
+    await app_state.scheduler.execute_chat_completion(
+        requested_model="model-a", payload={"messages": []}, request_id="request-path-1"
+    )
+
+    assert health.calls[0].request.url.path == "/v1/models"
+    assert completion.calls[0].request.url.path == "/v1/chat/completions"
+    assert health.calls[0].request.headers["authorization"] == "Bearer k1"
+    assert completion.calls[0].request.headers["authorization"] == "Bearer k1"
+
+
 def test_admin_provider_key_test_validates_target_and_auth(two_provider_config):
     two_provider_config.server.require_auth = True
     two_provider_config.server.client_keys = ["secret123"]

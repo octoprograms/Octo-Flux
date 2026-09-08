@@ -227,6 +227,7 @@ def _parse_discovered_model(item: dict[str, Any]) -> DiscoveredModel | None:
         supported_parameters=frozenset(item.get("supported_parameters") or []),
         prompt_price=prompt_price,
         completion_price=completion_price,
+        deprecated=bool(item.get("deprecated") or item.get("decommissioned")),
     )
 
 

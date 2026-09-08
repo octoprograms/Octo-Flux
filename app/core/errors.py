@@ -30,6 +30,13 @@ class ErrorCategory(str, Enum):
     UNKNOWN = "unknown"
 
 
+class FailureScope(str, Enum):
+    MODEL = "model"
+    KEY = "key"
+    PROVIDER = "provider"
+    REQUEST = "request"
+
+
 @dataclass(frozen=True)
 class RetryDecision:
     category: ErrorCategory
@@ -41,15 +48,18 @@ class RetryDecision:
     cooldown: bool  # apply cooldown to the failing target
     long_cooldown: bool  # use health.long_cooldown_seconds instead of cooldown_seconds
     return_to_client: bool  # if all retries are exhausted or this is decisive, this is what caller sees
+    scope: FailureScope = FailureScope.REQUEST
     retry_after_seconds: float | None = None  # honored from upstream Retry-After header
 
 
 _DECISIONS: dict[ErrorCategory, RetryDecision] = {
     ErrorCategory.AUTHENTICATION_ERROR: RetryDecision(
-        ErrorCategory.AUTHENTICATION_ERROR, True, False, False, True, "key", True, False, True
+        ErrorCategory.AUTHENTICATION_ERROR, True, False, True, True, "key", True, False, True,
+        scope=FailureScope.KEY,
     ),
     ErrorCategory.AUTHORIZATION_ERROR: RetryDecision(
-        ErrorCategory.AUTHORIZATION_ERROR, True, False, False, True, "key", True, False, True
+        ErrorCategory.AUTHORIZATION_ERROR, True, False, True, True, "key", True, False, True,
+        scope=FailureScope.KEY,
     ),
     ErrorCategory.RATE_LIMITED: RetryDecision(
         ErrorCategory.RATE_LIMITED, True, False, True, True, None, True, False, True
@@ -58,7 +68,8 @@ _DECISIONS: dict[ErrorCategory, RetryDecision] = {
         ErrorCategory.QUOTA_EXCEEDED, True, False, True, True, None, True, True, True
     ),
     ErrorCategory.MODEL_NOT_FOUND: RetryDecision(
-        ErrorCategory.MODEL_NOT_FOUND, True, False, False, True, None, False, False, True
+        ErrorCategory.MODEL_NOT_FOUND, True, False, False, True, None, False, False, True,
+        scope=FailureScope.MODEL,
     ),
     ErrorCategory.INVALID_REQUEST: RetryDecision(
         ErrorCategory.INVALID_REQUEST, False, False, False, False, None, False, False, True
@@ -93,6 +104,13 @@ def decision_for(category: ErrorCategory) -> RetryDecision:
 
 _CONTEXT_LENGTH_RE = re.compile(r"context.{0,20}length|maximum context|too many tokens", re.I)
 _MODEL_NOT_FOUND_RE = re.compile(r"model.{0,20}(not found|does not exist|unknown)", re.I)
+_MODEL_ENTITLEMENT_RE = re.compile(
+    r"(?:model|endpoint).{0,100}(?:not available|unavailable|not authorized|unauthorized|access|entitl|permission|free)"
+    r"|(?:not available|unavailable|not authorized|unauthorized|access|entitl|permission).{0,100}(?:model|endpoint)"
+    r"|no endpoint.{0,100}available"
+    r"|(?:model|endpoint).{0,100}free users?",
+    re.I,
+)
 _QUOTA_RE = re.compile(r"quota|insufficient.?(credit|balance|funds)|billing", re.I)
 
 
@@ -102,6 +120,8 @@ def classify_http_status(status_code: int, body_text: str = "") -> ErrorCategory
     if status_code == 401:
         return ErrorCategory.AUTHENTICATION_ERROR
     if status_code == 403:
+        if _MODEL_ENTITLEMENT_RE.search(body_text):
+            return ErrorCategory.MODEL_NOT_FOUND
         return ErrorCategory.AUTHORIZATION_ERROR
     if status_code == 404:
         return ErrorCategory.MODEL_NOT_FOUND
