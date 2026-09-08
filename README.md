@@ -1224,13 +1224,13 @@ If OctoFlux is useful to you, consider supporting its development:
 
 <div align="left">
 
-<a href="https://buymeacoffee.com/octoprograms" target="_blank">
-  <img
-    src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png"
-    alt="Buy Me a Coffee"
-    style="height: 60px !important; width: 217px !important;"
-  >
-</a>
+  <a href="https://buymeacoffee.com/octoprograms" target="_blank">
+    <img
+      src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png"
+      alt="Buy Me a Coffee"
+      style="height: 60px !important; width: 217px !important;"
+    >
+  </a>
 
 </div>
 
