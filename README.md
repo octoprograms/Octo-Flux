@@ -104,15 +104,20 @@ See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the design rationale, trade-offs, a
   * Background `/models` probes
   * Manual provider/key testing
 
-OpenRouter can optionally discover free text models at runtime. Configure
-`providers.openrouter.dynamic_models` with `enabled`, the filtered OpenRouter
-`/models` endpoint, `max_candidates`, and `refresh_interval_seconds`. Discovery
-is cached in memory and keeps the last known list through short endpoint
-failures. Discovered models are used by `model: "auto"` after configured
-candidates. A failed model receives a temporary model-level cooldown, while a
-successful model is marked healthy again. Configured models remain usable even
-when absent from the model list because real completions are authoritative.
-Set `dynamic_models.enabled: false` to disable it.
+For chat requests, `model: "auto"` delegates OpenRouter free-model selection to
+OpenRouter's `openrouter/free` router. OctoFlux does not discover or maintain a
+list of individual OpenRouter free models for this route. OpenRouter filters
+the currently available free models for the request and returns the concrete
+model it selected in the response.
+
+OpenRouter API keys are still selected and rotated by OctoFlux. The logical
+`openrouter/free` route keeps its own model-level health and cooldown state,
+while provider and key health remain managed by OctoFlux. A failure can still
+fall back to the next eligible provider according to the normal retry policy.
+
+The `providers.openrouter.dynamic_models` settings remain available for other
+capabilities and explicit discovery use, but they are not used for OpenRouter
+chat requests with `model: "auto"`.
 
 * **Operational visibility**
 
@@ -617,6 +622,19 @@ Aliases are useful when you intentionally want model substitution.
 (provider.priority, model.priority)
 ```
 
+OpenRouter is the exception to concrete model expansion for chat: its `auto`
+candidate is the single logical model `openrouter/free`. Groq, NVIDIA NIM, and
+other providers retain their configured `auto` candidates. Clients continue to
+send `model: "auto"`; only the upstream OpenRouter request uses
+`model: "openrouter/free"`.
+
+```text
+client model=auto
+  -> OctoFlux selects provider/key
+  -> OpenRouter upstream model=openrouter/free
+  -> OpenRouter selects the available free model
+```
+
 ---
 
 # Model Discovery
@@ -626,6 +644,9 @@ GET /v1/models
 ```
 
 Returns configured models and aliases using an OpenAI-compatible response format.
+The list continues to advertise the client-facing `auto` model and configured
+models; `openrouter/free` is an internal upstream route for OpenRouter
+`auto` requests and is not required in the public model list.
 
 To inspect alias targets:
 
@@ -698,6 +719,8 @@ Routing is deterministic.
 For each request OctoFlux:
 
 1. Resolves the requested model, alias, or `auto`.
+  For OpenRouter chat, `auto` resolves to the logical `openrouter/free` route;
+  it does not expand into discovered concrete free models.
 2. Removes disabled providers and models.
 3. Removes providers and keys in cooldown.
 4. Removes targets whose local limits are exhausted.
@@ -947,6 +970,8 @@ ERROR
 ```
 
 Every routing decision includes its reason through the `routing_decision` event.
+For translated routes, structured logs include both `requested_model` and
+`upstream_model`, for example `auto` and `openrouter/free` respectively.
 
 ---
 

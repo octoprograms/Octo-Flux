@@ -24,4 +24,4 @@ else
 fi
 
 echo "Starting OctoFlux..."
-exec "$VENV_PYTHON" -m uvicorn app.main:app --reload --port 8000
+exec "$VENV_PYTHON" -m uvicorn app.main:app --host 0.0.0.0 --reload --port 8000

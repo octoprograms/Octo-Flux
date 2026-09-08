@@ -96,7 +96,9 @@ validate request → request_id → resolve model (exact/alias/auto)
 Deterministic pipeline, in this order:
 
 1. Resolve requested `model` — exact `provider/model` id, an alias group, or
-   `"auto"` (all enabled providers/models, priority order).
+    `"auto"` (all enabled providers/models, priority order). For OpenRouter chat,
+    `"auto"` creates one logical `openrouter/free` model route instead of
+    expanding discovered concrete free models.
 2. Filter disabled providers/models.
 3. Filter providers/models/keys currently in `cooldown` or `unhealthy`.
 4. Filter keys/providers whose local RPM/RPD/TPM/TPD or concurrency limit is
@@ -168,15 +170,19 @@ quota, or rate limits. The chat scheduler remains the final authority and
 classifies actual completion failures such as `model_not_found` and
 `rate_limited`.
 
-Providers may also expose dynamic model discovery through the generic adapter
-contract. OpenRouter uses this for its free, text-output model endpoint with
-an in-memory, lock-protected cache. The cache retains the last successful list
-during transient discovery failures and expires it after the configured stale
-window. Dynamic models are appended to configured candidates for `model: auto`;
-they do not replace explicitly configured models. Metadata filters out paid
-models, non-text outputs, models incompatible with obvious request
-requirements, and models in model-level cooldown. Discovery is only a
-candidate-generation hint: actual completion responses remain authoritative.
+Providers may expose dynamic model discovery through the generic adapter
+contract. Discovery is cached in memory, retains the last successful list
+during transient failures, and expires after the configured stale window.
+However, OpenRouter chat requests using `model: auto` deliberately bypass this
+discovery path. OctoFlux sends the single logical model ID `openrouter/free`
+and lets OpenRouter filter and select the currently available free model. This
+keeps multi-provider routing in OctoFlux while leaving OpenRouter free-model
+availability and capability selection to OpenRouter. Dynamic discovery remains
+available for other capabilities and explicit discovery use.
+
+The response's upstream `model` field may identify the concrete model selected
+by OpenRouter, while OctoFlux health and cooldown state remains keyed to the
+logical `openrouter/free` route rather than that concrete model.
 
 Model health is tracked separately from provider and key health. Retryable
 completion failures apply an exponential, bounded cooldown to the individual

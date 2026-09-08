@@ -84,12 +84,17 @@ class Router:
         enabled = self.config.enabled_providers()
 
         if requested_model == "auto":
-            pairs = [
-                (pid, m.id)
-                for pid, p in sorted(enabled.items(), key=lambda kv: kv[1].priority)
-                for m in sorted(p.models, key=lambda m: m.priority)
-                if m.enabled and capability in m.capabilities
-            ]
+            pairs = []
+            for pid, provider in sorted(enabled.items(), key=lambda kv: kv[1].priority):
+                if pid == "openrouter" and capability == "chat":
+                    if any(m.enabled and capability in m.capabilities for m in provider.models):
+                        pairs.append((pid, "openrouter/free"))
+                    continue
+                pairs.extend(
+                    (pid, model.id)
+                    for model in sorted(provider.models, key=lambda m: m.priority)
+                    if model.enabled and capability in model.capabilities
+                )
             return pairs, True, bool(pairs)
 
         if requested_model in self.config.aliases:
@@ -175,17 +180,18 @@ class Router:
                     excluded.append(f"key '{provider_id}:{key.name}' exhausted its local request rate limit")
                     continue
 
-                model_cfg = next(m for m in provider.models if m.id == model_id)
+                model_cfg = next((m for m in provider.models if m.id == model_id), None)
+                model_priority = model_cfg.priority if model_cfg is not None else 0
                 candidates.append(
                     Candidate(
                         provider_id=provider_id,
                         model_id=model_id,
                         key=key,
                         provider_priority=provider.priority,
-                        model_priority=model_cfg.priority,
+                        model_priority=model_priority,
                         reason=(
                             f"provider healthy, model enabled, key '{key.name}' healthy, "
-                            f"within local limits, priority=({provider.priority},{model_cfg.priority})"
+                            f"within local limits, priority=({provider.priority},{model_priority})"
                         ),
                     )
                 )
@@ -203,7 +209,7 @@ class Router:
         payload = payload or {}
         for provider_id, provider in sorted(self.config.enabled_providers().items(), key=lambda item: item[1].priority):
             settings = provider.dynamic_models
-            if not settings.enabled:
+            if not settings.enabled or (provider_id == "openrouter" and capability == "chat"):
                 continue
             adapter = self.providers.adapter(provider_id)
             keys = [key for key in provider.keys if key.enabled]

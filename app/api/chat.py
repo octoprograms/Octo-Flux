@@ -77,6 +77,7 @@ async def _handle_streaming(state: AppState, requested_model: str, payload: dict
             log_event(
                 "upstream_stream_failure_pre_byte", level="warning", request_id=request_id,
                 provider=candidate.provider_id, model=candidate.model_id, key=candidate.key.name,
+                requested_model=requested_model, upstream_model=candidate.model_id,
                 category=category.value, attempt=attempt_number,
             )
             last_error = ClientFacingError(exc.status_code, exc.body_text[:200] or category.value, category.value)
@@ -89,7 +90,9 @@ async def _handle_streaming(state: AppState, requested_model: str, payload: dict
             last_error = ClientFacingError(502, "Could not connect to upstream provider.", category.value)
             log_event(
                 "upstream_stream_connect_failure", level="warning", request_id=request_id,
-                provider=candidate.provider_id, category=category.value, attempt=attempt_number,
+                provider=candidate.provider_id, model=candidate.model_id, category=category.value,
+                requested_model=requested_model, upstream_model=candidate.model_id,
+                attempt=attempt_number,
             )
             continue
 
@@ -103,6 +106,7 @@ async def _handle_streaming(state: AppState, requested_model: str, payload: dict
         log_event(
             "upstream_stream_started", request_id=request_id, provider=candidate.provider_id,
             model=candidate.model_id, key=candidate.key.name, attempt=attempt_number,
+            requested_model=requested_model, upstream_model=candidate.model_id,
         )
 
         async def body_iterator(first: bytes | None = first_chunk, generator=gen) -> AsyncIterator[bytes]:

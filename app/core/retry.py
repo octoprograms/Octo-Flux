@@ -252,6 +252,7 @@ class Scheduler:
                 "routing_decision", request_id=request_id, attempt=attempt_number,
                 operation=operation,
                 provider=candidate.provider_id, model=candidate.model_id,
+                requested_model=requested_model, upstream_model=candidate.model_id,
                 key=candidate.key.name, reason=candidate.reason,
             )
 
@@ -265,6 +266,7 @@ class Scheduler:
             log_event(
                 "upstream_request_started", request_id=request_id, operation=operation,
                 provider=candidate.provider_id, model=candidate.model_id, key=candidate.key.name,
+                requested_model=requested_model, upstream_model=candidate.model_id,
                 attempt=attempt_number,
             )
             result = await call(adapter, candidate)
@@ -286,6 +288,7 @@ class Scheduler:
                 log_event(
                     "upstream_success", request_id=request_id, provider=candidate.provider_id,
                     operation=operation, model=candidate.model_id, key=candidate.key.name,
+                    requested_model=requested_model, upstream_model=candidate.model_id,
                     latency_ms=round(result.latency_ms, 1),
                     attempt=attempt_number,
                 )
@@ -319,6 +322,7 @@ class Scheduler:
             log_event(
                 "upstream_failure", level="warning", request_id=request_id, provider=candidate.provider_id,
                 operation=operation, model=candidate.model_id, key=candidate.key.name,
+                requested_model=requested_model, upstream_model=candidate.model_id,
                 category=category.value,
                 status_code=result.status_code, attempt=attempt_number, retryable=decision.retryable,
             )
