@@ -193,3 +193,51 @@ def test_admin_usage_reflects_requests(app_state: AppState):
 
     usage_resp = client.get("/admin/usage")
     assert usage_resp.json()["global"]["successful_requests"] >= 1
+
+
+@respx.mock
+def test_successful_request_counts_toward_token_limits():
+    from tests.conftest import make_config
+
+    state = AppState.build(make_config(
+        """
+        server: {require_auth: false}
+        providers:
+          alpha:
+            base_url: "http://alpha.test/v1"
+            keys: [{name: k, value: "k1"}]
+            models: [{id: model-a}]
+            limits: {tokens_per_minute: 1000}
+        """
+    ))
+    respx.post("http://alpha.test/v1/chat/completions").mock(return_value=ok_response())
+    _client_for(state).post("/v1/chat/completions", json={"model": "model-a", "messages": []})
+
+    assert state.limits.snapshot()["providers"]["alpha"]["tokens_per_minute"]["used"] == 8  # 5 prompt + 3 completion
+
+
+@respx.mock
+def test_streaming_counts_toward_limits_and_usage(app_state: AppState):
+    sse_chunk = b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: [DONE]\n\n'
+    respx.post("http://alpha.test/v1/chat/completions").mock(
+        return_value=httpx.Response(200, content=sse_chunk, headers={"content-type": "text/event-stream"})
+    )
+    client = _client_for(app_state)
+    before = client.get("/admin/usage").json()["global"]["successful_requests"]
+    with client.stream("POST", "/v1/chat/completions", json={"model": "model-a", "messages": [], "stream": True}) as resp:
+        b"".join(resp.iter_bytes())
+
+    alpha = app_state.limits.snapshot()["providers"]["alpha"]
+    assert alpha["requests_per_minute"]["used"] == 1
+    assert alpha["in_flight"] == 0  # released once the stream finished
+    assert client.get("/admin/usage").json()["global"]["successful_requests"] == before + 1
+
+
+@respx.mock
+def test_streaming_error_does_not_echo_upstream_body(app_state: AppState):
+    respx.post("http://alpha.test/v1/chat/completions").mock(return_value=error_response(400, "secret upstream detail"))
+    client = _client_for(app_state)
+    resp = client.post("/v1/chat/completions", json={"model": "model-a", "messages": [], "stream": True})
+
+    assert resp.status_code == 400
+    assert "secret upstream detail" not in resp.text

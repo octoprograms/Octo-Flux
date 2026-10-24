@@ -14,6 +14,8 @@ class UpstreamSuccess:
     latency_ms: float
     input_tokens: int = 0
     output_tokens: int = 0
+    # Set for streaming calls: the remaining SSE bytes (first chunk included).
+    stream: AsyncIterator[bytes] | None = None
 
 
 @dataclass

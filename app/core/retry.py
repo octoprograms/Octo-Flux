@@ -14,7 +14,7 @@ import asyncio
 import random
 import time
 from dataclasses import dataclass
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
 from app.core.errors import (
@@ -32,6 +32,7 @@ from app.core.usage import UsageRegistry
 from app.models.provider import OctoFluxConfig
 from app.observability.logging import log_event
 from app.providers.base import UpstreamFailure, UpstreamSuccess
+from app.providers.openai_compatible import UpstreamStreamError
 from app.providers.registry import ProviderRegistry
 
 
@@ -63,6 +64,44 @@ class ChatCompletionResult:
     model_id: str
     key_name: str
     trace: list[AttemptTrace]
+    stream: AsyncIterator[bytes] | None = None
+
+
+async def _end_when_done(stream: AsyncIterator[bytes], states: list) -> AsyncIterator[bytes]:
+    # Streams stay "in flight" for concurrency limits until the body finishes.
+    try:
+        async for chunk in stream:
+            yield chunk
+    finally:
+        for state in states:
+            state.record_request_end()
+
+
+async def _open_stream(
+    adapter: Any, candidate: Candidate, payload: dict[str, Any], request_id: str
+) -> UpstreamSuccess | UpstreamFailure:
+    """Open an upstream stream and wait for its first chunk. Failures before the
+    first byte are returned as UpstreamFailure so the normal failover applies."""
+    start = time.perf_counter()
+    gen = adapter.chat_completion_stream(
+        model=candidate.model_id, payload=payload, api_key=candidate.key.value, request_id=request_id
+    )
+    try:
+        first = await gen.__anext__()
+    except StopAsyncIteration:
+        first = None
+    except UpstreamStreamError as exc:
+        return UpstreamFailure(exc.status_code, exc.body_text, (time.perf_counter() - start) * 1000, headers=exc.headers)
+    except Exception as exc:  # connection-level failure before first byte
+        return UpstreamFailure(None, str(exc), (time.perf_counter() - start) * 1000, exception=exc)
+
+    async def rest() -> AsyncIterator[bytes]:
+        if first is not None:
+            yield first
+        async for chunk in gen:
+            yield chunk
+
+    return UpstreamSuccess(200, {}, (time.perf_counter() - start) * 1000, stream=rest())
 
 
 def _backoff_seconds(attempt: int, base_ms: int, max_ms: int, jitter_ms: int) -> float:
@@ -174,6 +213,18 @@ class Scheduler:
             ),
         )
 
+    async def execute_chat_stream(
+        self, *, requested_model: str, payload: dict[str, Any], request_id: str
+    ) -> ChatCompletionResult:
+        return await self._execute_operation(
+            requested_model=requested_model,
+            payload=payload,
+            request_id=request_id,
+            capability="chat",
+            operation="chat.completions.stream",
+            call=lambda adapter, candidate: _open_stream(adapter, candidate, payload, request_id),
+        )
+
     async def execute_embeddings(
         self, *, requested_model: str, payload: dict[str, Any], request_id: str
     ) -> ChatCompletionResult:
@@ -271,9 +322,14 @@ class Scheduler:
             )
             result = await call(adapter, candidate)
 
-            provider_limit_state.record_request_end()
-            if key_limit_state is not None:
-                key_limit_state.record_request_end()
+            limit_states = [s for s in (provider_limit_state, key_limit_state) if s is not None]
+            if isinstance(result, UpstreamSuccess) and result.stream is not None:
+                # shortcut: streamed tokens are not counted toward token limits; parse the final usage chunk if that matters.
+                result.stream = _end_when_done(result.stream, limit_states)
+            else:
+                tokens_used = result.input_tokens + result.output_tokens if isinstance(result, UpstreamSuccess) else 0
+                for state in limit_states:
+                    state.record_request_end(tokens_used)
 
             if isinstance(result, UpstreamSuccess):
                 self.health.provider(candidate.provider_id).record_success()
@@ -298,6 +354,7 @@ class Scheduler:
                     model_id=candidate.model_id,
                     key_name=candidate.key.name,
                     trace=trace,
+                    stream=result.stream,
                 )
 
             # Failure path
