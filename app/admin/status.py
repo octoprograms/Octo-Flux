@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 
 from app.api.deps import get_state, require_admin_auth
 from app.core.app_state import AppState
@@ -169,12 +169,17 @@ async def admin_reload(request: Request, state: AppState = Depends(get_state)) -
         log_event("config_reload_failed", level="error", error=str(exc))
         return {"status": "error", "message": str(exc)}
 
+    await apply_config(request.app, new_config)
+    log_event("config_reloaded", providers=list(new_config.providers.keys()))
+    return {"status": "ok", "providers": list(new_config.providers.keys())}
+
+
+async def apply_config(app: FastAPI, new_config) -> None:
+    """Swap in a new config, keeping health/limits/usage state; closes the old provider clients."""
+    state: AppState = app.state.OctoFlux
     old_providers = state.providers
     new_state = state.replace_config(new_config)
-    request.app.state.OctoFlux = new_state
+    app.state.OctoFlux = new_state
     new_state.health_monitor.start()
     await state.health_monitor.stop()
     await old_providers.aclose()
-
-    log_event("config_reloaded", providers=list(new_config.providers.keys()))
-    return {"status": "ok", "providers": list(new_config.providers.keys())}

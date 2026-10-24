@@ -6,3 +6,5 @@ venv/
 .env
 *.egg-info/
 *.db
+config/backups/
+*.yaml.tmp

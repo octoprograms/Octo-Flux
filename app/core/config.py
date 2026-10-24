@@ -63,7 +63,7 @@ def load_config(path: str | Path) -> OctoFluxConfig:
     p = Path(path)
     if not p.exists():
         raise ConfigError(f"configuration file not found: {p}")
-    raw = load_yaml_text(p.read_text())
+    raw = load_yaml_text(p.read_text(encoding="utf-8"))
     resolved = _resolve_env_recursive(raw)
 
     # Fill provider.id from the mapping key if not explicitly given, so
