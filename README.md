@@ -556,9 +556,12 @@ Each key maintains independent runtime state:
 * Rate limits
 * Selection state
 
-Supported key-selection strategies:
+Supported key-selection strategies (`routing.default_key_selection`, overridable per provider with `key_selection`):
 
 ```text
+smart        (default) key with the most headroom first: the smallest remaining fraction of its
+             local limit windows and, when known, of the upstream x-ratelimit remaining budget.
+             Ties rotate round-robin.
 round_robin
 least_used
 priority

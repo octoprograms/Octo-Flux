@@ -9,7 +9,7 @@ server:
     - {name: owner, value: "${OctoFlux_ADMIN_KEY}"}
 
 routing:
-  default_key_selection: round_robin
+  default_key_selection: smart
   max_total_attempts: 4
   allow_model_fallback: true
   allow_provider_fallback: true
@@ -20,7 +20,6 @@ providers:
     type: openai_compatible
     base_url: "https://api.groq.com/openai/v1"
     priority: 20
-    key_selection: round_robin
 
     keys:
       - name: groq-primary
@@ -58,7 +57,6 @@ providers:
     type: openai_compatible
     base_url: "https://openrouter.ai/api/v1"
     priority: 10
-    key_selection: round_robin
 
     dynamic_models:
       enabled: true
@@ -114,7 +112,6 @@ providers:
     type: openai_compatible
     base_url: "https://integrate.api.nvidia.com/v1"
     priority: 30
-    key_selection: round_robin
 
     keys:
       - name: nim-primary

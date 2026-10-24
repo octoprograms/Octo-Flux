@@ -113,7 +113,8 @@ class ProviderConfig(BaseModel):
     authentication: AuthenticationConfig = Field(default_factory=AuthenticationConfig)
     headers: dict[str, str] = Field(default_factory=dict)
 
-    key_selection: Literal["round_robin", "least_used", "priority"] = "round_robin"
+    # None -> routing.default_key_selection
+    key_selection: Literal["smart", "round_robin", "least_used", "priority"] | None = None
 
     request_timeout_seconds: float = Field(default=60.0, gt=0)
     connect_timeout_seconds: float = Field(default=10.0, gt=0)
@@ -166,7 +167,7 @@ class ServerConfig(BaseModel):
 
 
 class RoutingConfig(BaseModel):
-    default_key_selection: Literal["round_robin", "least_used", "priority"] = "round_robin"
+    default_key_selection: Literal["smart", "round_robin", "least_used", "priority"] = "smart"
     max_total_attempts: int = Field(default=4, ge=1, le=20)
     allow_model_fallback: bool = True
     allow_provider_fallback: bool = True

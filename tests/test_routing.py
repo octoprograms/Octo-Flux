@@ -65,3 +65,78 @@ def test_exhausted_local_rate_limit_excludes_provider(app_state):
     resolution = app_state.scheduler.router.resolve("model-a")
     providers = {c.provider_id for c in resolution.candidates}
     assert "alpha" not in providers
+
+
+SMART = """
+routing: {{default_key_selection: {routing}}}
+providers:
+  solo:
+    base_url: "http://solo.test/v1"
+    keys:
+      - {{name: A, value: "va"}}
+      - {{name: B, value: "vb"}}
+    models: [{{id: m}}]
+    limits: {{requests_per_minute: 10}}
+    {extra}
+"""
+
+
+def _smart_state(tmp_path, routing: str = "smart", extra: str = "") -> AppState:
+    import os
+
+    from tests.conftest import make_config
+
+    os.environ["OctoFlux_USAGE_DB"] = str(tmp_path / "usage.db")
+    return AppState.build(make_config(SMART.format(routing=routing, extra=extra)))
+
+
+def _first_key(state: AppState) -> str:
+    return state.scheduler.router.resolve("m").candidates[0].key.name
+
+
+def _use(state: AppState, key: str, n: int) -> None:
+    from app.core.limits import effective_key_limits
+
+    provider = state.config.providers["solo"]
+    cfg = effective_key_limits(provider, next(k for k in provider.keys if k.name == key))
+    for _ in range(n):
+        state.limits.key("solo", key, cfg).record_request_start()
+
+
+def test_smart_prefers_key_with_most_headroom(tmp_path):
+    state = _smart_state(tmp_path)
+    _use(state, "A", 8)
+    _use(state, "B", 2)
+    assert _first_key(state) == "B"
+    assert _first_key(state) == "B"
+
+
+def test_smart_uses_upstream_remaining(tmp_path):
+    from app.core.ratelimit_headers import RateLimitInfo
+
+    state = _smart_state(tmp_path)
+    state.health.key("solo", "A").record_rate_limit(RateLimitInfo(10, None, None))
+    state.health.key("solo", "A").record_rate_limit(RateLimitInfo(1, None, None))
+    state.health.key("solo", "B").record_rate_limit(RateLimitInfo(10, None, None))
+    state.health.key("solo", "B").record_rate_limit(RateLimitInfo(9, None, None))
+    assert _first_key(state) == "B"
+
+
+def test_smart_ties_round_robin(tmp_path):
+    state = _smart_state(tmp_path)
+    assert [_first_key(state) for _ in range(4)] == ["A", "B", "A", "B"]
+
+
+def test_provider_inherits_routing_default(tmp_path):
+    assert _smart_state(tmp_path).config.providers["solo"].key_selection is None
+    assert _smart_state(tmp_path).config.routing.default_key_selection == "smart"
+    state = _smart_state(tmp_path, routing="priority")
+    assert [_first_key(state) for _ in range(3)] == ["A", "A", "A"]
+    explicit = _smart_state(tmp_path, routing="priority", extra="key_selection: round_robin")
+    assert [_first_key(explicit) for _ in range(2)] == ["A", "B"]
+
+
+def test_routing_default_is_smart():
+    from app.models.provider import RoutingConfig
+
+    assert RoutingConfig().default_key_selection == "smart"

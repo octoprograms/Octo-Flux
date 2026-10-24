@@ -16,7 +16,7 @@ from itertools import count
 from app.core.health import HealthRegistry
 from app.core.limits import LimitsRegistry, effective_key_limits, estimate_tokens
 from app.core.usage import UsageRegistry
-from app.models.provider import KeyConfig, OctoFluxConfig, ProviderConfig
+from app.models.provider import KeyConfig, LimitsConfig, OctoFluxConfig, ProviderConfig
 from app.providers.base import DiscoveredModel
 from app.providers.registry import ProviderRegistry
 
@@ -65,8 +65,24 @@ class Router:
         self.providers = providers
         self._rr = _RoundRobinCursor()
 
+    def _headroom(self, provider_id: str, key: KeyConfig, cfg: LimitsConfig) -> float:
+        """Smallest remaining fraction across local windows and the upstream budget; 1.0 when unknown."""
+        fractions = [
+            1 - counter.current_total() / counter.limit
+            for counter in self.limits.key(provider_id, key.name, cfg).counters.values()
+        ]
+        health = self.health.key(provider_id, key.name)
+        if health.remaining_requests is not None and health.max_remaining_requests:
+            fractions.append(health.remaining_requests / health.max_remaining_requests)
+        return max(0.0, min(fractions, default=1.0))
+
     def _order_keys(self, provider: ProviderConfig, keys: list[KeyConfig]) -> list[KeyConfig]:
-        policy = provider.key_selection
+        policy = provider.key_selection or self.config.routing.default_key_selection
+        if policy == "smart" and len(keys) > 1:
+            start = self._rr.next_index(provider.id, len(keys))
+            rotated = keys[start:] + keys[:start]
+            # Stable sort keeps round-robin order between keys with equal headroom.
+            return sorted(rotated, key=lambda k: -self._headroom(provider.id, k, effective_key_limits(provider, k)))
         if policy == "priority" or len(keys) <= 1:
             return keys
         if policy == "least_used":
