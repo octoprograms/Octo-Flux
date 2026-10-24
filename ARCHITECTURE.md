@@ -96,16 +96,25 @@ validate request → request_id → resolve model (exact/alias/auto)
 Deterministic pipeline, in this order:
 
 1. Resolve requested `model` — exact `provider/model` id, an alias group, or
-    `"auto"` (all enabled providers/models, priority order). For OpenRouter chat,
-    `"auto"` creates one logical `openrouter/free` model route instead of
-    expanding discovered concrete free models.
+    `"auto"` (all enabled providers/models, priority order). For `"auto"`,
+    providers with `dynamic_models` add discovered models ranked by
+    `app/core/model_stats.py` (OpenRouter position adjusted by 24 h successes,
+    failures and latency; pins first, blocks never), and OpenRouter chat ends
+    with the `openrouter/free` router. Configured `:free` models missing from the
+    last successful discovery are skipped as stale.
 2. Filter disabled providers/models.
 3. Filter providers/models/keys currently in `cooldown` or `unhealthy`.
 4. Filter keys/providers whose local RPM/RPD/TPM/TPD or concurrency limit is
-   currently exhausted.
+   currently exhausted. Provider `limits` apply per key (merged with the key's
+   own `limits`); `total_limits` caps all keys together. Token limits are
+   checked against an estimate (`chars / 4 + max_tokens`). Keys whose upstream
+   `x-ratelimit-*` headers reported 0 remaining are in cooldown until the
+   reported reset (clamped to 24 h).
 5. Sort remaining candidates by `(provider.priority, model.priority)` ascending
-   (lower number = tried first), then by key-selection policy
-   (`round_robin` default; `least_used`, `priority` also supported).
+   (lower number = tried first), then by key-selection policy (`smart` default:
+   most headroom first, the smallest remaining fraction across local windows
+   and the upstream budget, ties round-robin; `round_robin`, `least_used`,
+   `priority` also supported).
 6. Scheduler walks the sorted candidate list. It never retries the exact same
    `(provider, model, key)` twice for one client request.
 
@@ -204,11 +213,16 @@ on duplicate IDs, malformed URLs, or out-of-range limits — never a stack trace
 
 ## Persistence strategy
 
-In-memory only for v1 (dict-backed `Registry`, sliding-window counters).
-Persistence is behind a small `UsageStore` interface (`app/core/usage.py`) so a
-SQLite-backed implementation can be dropped in later without touching the
-router or providers. Not implemented in v1 because nothing in the required
-behavior needs it to survive a process restart.
+Runtime state is in memory with fixed-size structures (60-bucket rate
+counters, 24 hourly buckets per model, a 1 440-slot minute series per
+provider, a 200-entry request log). Usage counters, rate-limit counters and
+the minute series are flushed to SQLite (`data/usage.db`) every 60 s and on
+shutdown, never per request, and restored at startup.
+
+Configuration is the YAML file. The dashboard edits the raw file (before
+`${VAR}` resolution) through `app/core/config_store.py`: masked secrets are
+mapped back to stored values, the result is validated, the old file is backed
+up to `config/backups/`, the new one is written atomically and hot-reloaded.
 
 ## Security model
 
@@ -221,20 +235,21 @@ Two independent credential domains:
   `OpenAICompatibleProvider`, and is referenced everywhere else (logs, admin
   status, error messages) by its configured `name`, never its value.
 
-Admin endpoints (`/admin/*`) require the same client-key auth by default and
-never render key values. The static operator dashboard is served at `/admin`
-and uses that same client key from the browser session to call the protected
-admin endpoints; it does not introduce a second identity or password store.
-Deployments should put the dashboard behind HTTPS and restrict access to
-trusted operators because the client key authorizes both admin and gateway
-requests.
+Admin endpoints (`/admin/*`, `/metrics`) require a separate **admin key**
+(`server.admin_keys`, named so saves are attributed); client keys only open
+`/v1/*`. Both comparisons use `hmac.compare_digest`. With no admin keys the
+admin API answers 403. Literal secrets reach the browser only masked, and a
+save that would remove every admin key is refused. The static dashboard
+files are public (they contain no data). Deployments should still serve the
+dashboard over HTTPS, since an admin key can rewrite the whole configuration.
 
 ## Performance considerations
 
 - Single shared `httpx.AsyncClient` per provider (connection pooling,
   keep-alive) built once at startup, not per request.
-- Hot path does no disk/db I/O; rate-limit counters are in-memory deques with
-  O(1) amortized trim.
+- Hot path does no disk/db I/O; rate-limit counters are fixed 60-bucket rings
+  (constant memory regardless of traffic). Target: under 80 MB RSS on a
+  512 MB server (`python scripts/benchmark.py --memory`).
 - Structured logs are single `logger.info(json)` calls, not multi-line
   formatting, and never serialize full prompts/responses — only sizes/ids.
 - Streaming responses are forwarded chunk-by-chunk (`httpx` streaming +

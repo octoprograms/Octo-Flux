@@ -291,6 +291,7 @@ Set your OctoFlux client key and provider credentials:
 
 ```env
 OctoFlux_CLIENT_KEY=OctoFlux-dev-key
+OctoFlux_ADMIN_KEY=change-me-admin-key
 GROQ_API_KEY_1=your-key
 ```
 
@@ -694,6 +695,30 @@ server:
 
 Configured model IDs should match the IDs exposed by the provider's `/models` endpoint.
 
+## Free OpenRouter models
+
+With `dynamic_models.enabled`, `auto` chat requests try OpenRouter in this order: your configured models, then free models discovered from the `dynamic_models.endpoint`, then the `openrouter/free` router as a last resort.
+
+Discovered models are filtered (free, not deprecated, text output, at least `min_context` tokens of context, not a safety/guard/embedding/moderation/rerank model, tool support when the request uses tools) and ranked by:
+
+```text
+score = OpenRouter position − 3 × successes (24 h, max 5) + 5 × failures (24 h, max 5) + latency penalty (+1 per 5 s over 5 s, max 5)
+```
+
+so models that actually answer quickly here rise, and ones that fail or rate-limit sink. Pinned models go first, blocked ones are never used:
+
+```yaml
+dynamic_models:
+  enabled: true
+  endpoint: "https://openrouter.ai/api/v1/models?max_price=0&order=intelligence-high-to-low&output_modalities=text"
+  max_candidates: 10
+  min_context: 32768
+  pinned: ["nvidia/nemotron-3-ultra-550b-a55b:free"]
+  blocked: []
+```
+
+A configured `:free` chat model that disappears from the latest successful discovery is skipped ("no longer listed as free upstream") and flagged on the Models page. If discovery is down, nothing is marked stale and routing continues with configured models and `openrouter/free`.
+
 OctoFlux also handles NVIDIA NIM's publisher-prefixed model IDs when the provider returns the corresponding bare model name.
 
 ---
@@ -876,21 +901,22 @@ The key is stored in browser `sessionStorage` and sent as:
 Authorization: Bearer <key>
 ```
 
-The dashboard provides:
+The dashboard lets you manage everything without editing YAML by hand:
 
-* Provider health and priority
-* Key health and cooldown state
-* Masked key hints
-* Model availability
-* Per-key testing
-* Request counters
-* Success/failure counters
-* Rate-limit counters
-* Timeout counters
-* Fallback counters
-* Configuration reload
-* Manual refresh
-* Sign-out
+| Page | What you can do |
+|---|---|
+| Overview | Requests per provider over 24 h, traffic by hour, requests by model, latency percentiles, tokens per minute |
+| Requests | The last 200 requests (no message content) with the full failover trace of each |
+| Providers | Enable, priority, base URL, per-key limits, `total_limits`, retry and health; add or remove providers |
+| Keys | Add (literal or `${VAR}`), rename, enable, test and delete keys; upstream quota and cooldown; rotation mode |
+| Models | Configured models and capabilities; the ranked free OpenRouter models with pin and block |
+| Aliases | Create aliases and order their fallback targets |
+| Playground | Send a message through the gateway and see which provider, key and model answered |
+| Settings | Create (shown once) and revoke client keys, admin keys, routing defaults, restore earlier config versions |
+
+Saving writes `config/OctoFlux.yaml` and applies it immediately (hot reload). Before every save the current file is copied to `config/backups/` (newest 20 kept; the folder is git-ignored because it can hold literal keys). Values written as `${VAR}` stay as references and are never replaced by the environment's value. Literal secrets are only ever sent to the browser masked (`•••• 1234`). **Comments in the YAML are lost on the first dashboard save**; the backup keeps the original. If two people edit at once, the second save is refused with "Someone else saved first" instead of overwriting.
+
+The same operations are available as JSON (admin key required): `GET/PUT /admin/config`, `GET /admin/config/backups`, `POST /admin/config/backups/{name}/restore`, `POST /admin/client-keys`, `GET /admin/requests[/{id}]`, `GET /admin/timeseries`, `GET /admin/latency`, `GET /admin/free-models`, `POST /admin/playground`.
 
 ### Configuration reload
 
@@ -905,6 +931,17 @@ Reloading preserves runtime health, cooldown, and usage state for providers and 
 If the new configuration is invalid, OctoFlux keeps the currently active configuration instead of switching to a broken state.
 
 > **Security:** admin keys can change the whole configuration. Deploy the admin interface behind HTTPS and restrict access to trusted operators.
+
+---
+
+# Breaking changes in this version
+
+* Client keys no longer open `/admin`, the dashboard or `/metrics`; add `server.admin_keys` (see Admin access).
+* `GET /health` returns only `{"status": "ok"}`; per-key detail moved to `GET /admin/health`.
+* A provider's `limits` now apply to **each key**; use `total_limits` for a combined cap.
+* `routing.default_key_selection` defaults to `smart`, and providers without `key_selection` follow it.
+* `auto` chat on OpenRouter tries configured and discovered free models before `openrouter/free`.
+* `run.sh` / `run.bat` no longer auto-reload; pass `--dev`.
 
 ---
 
@@ -1235,7 +1272,8 @@ The benchmark uses a mocked upstream to isolate OctoFlux's internal routing and 
 | `POST` | `/v1/responses`                               | Responses API compatibility layer  |
 | `GET`  | `/v1/models`                                  | List configured models and aliases |
 | `GET`  | `/v1/aliases`                                 | Inspect alias targets              |
-| `GET`  | `/health`                                     | Gateway and provider health        |
+| `GET`  | `/health`                                     | Liveness (`{"status": "ok"}`)     |
+| `GET`  | `/admin/health`                               | Provider and key check results     |
 | `GET`  | `/admin`                                      | Admin dashboard                    |
 | `GET`  | `/admin/status`                               | Runtime routing state              |
 | `GET`  | `/admin/usage`                                | Runtime usage statistics           |
@@ -1243,7 +1281,7 @@ The benchmark uses a mocked upstream to isolate OctoFlux's internal routing and 
 | `POST` | `/admin/reload`                               | Reload configuration               |
 | `POST` | `/admin/providers/{provider}/keys/{key}/test` | Test a provider key                |
 
-Protected endpoints require the configured OctoFlux client key when authentication is enabled.
+`/v1/*` endpoints require a client key when `require_auth` is on. `/admin/*` and `/metrics` always require an admin key (`server.admin_keys`). The dashboard's JSON endpoints are listed under Admin Dashboard.
 
 ---
 
