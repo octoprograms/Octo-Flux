@@ -6,7 +6,8 @@ from fastapi import APIRouter
 from fastapi.responses import FileResponse
 
 router = APIRouter()
-_UI_FILE = Path(__file__).with_name("static") / "index.html"
+STATIC_DIR = Path(__file__).with_name("static")
+_UI_FILE = STATIC_DIR / "index.html"
 
 
 @router.get("/admin", include_in_schema=False)
