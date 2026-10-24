@@ -1,7 +1,7 @@
 """Local rate limiting.
 
 Enforces operator-declared limits (LimitsConfig) purely in-memory using
-sliding-window counters. This is *not* about respecting the upstream
+bucketed sliding-window counters. This is *not* about respecting the upstream
 provider's own limits (we don't know those precisely) — it's about letting
 the operator say "treat this provider/key as 30 RPM" and having OctoFlux
 hold requests to that budget locally, proactively, before ever calling
@@ -10,7 +10,6 @@ upstream.
 from __future__ import annotations
 
 import time
-from collections import deque
 from dataclasses import dataclass, field
 
 from app.models.provider import LimitsConfig
@@ -30,32 +29,50 @@ _TOKEN_FIELDS = {"tokens_per_minute", "tokens_per_hour", "tokens_per_day"}
 
 
 class _SlidingWindowCounter:
-    """Timestamped-event deque; O(1) amortized on trim."""
+    """Fixed ring of `buckets` counts covering one window; memory is constant.
 
-    __slots__ = ("events", "window_seconds", "limit")
+    Accurate to one bucket (window / buckets). Uses wall-clock time so a
+    dump() survives a restart."""
 
-    def __init__(self, window_seconds: float, limit: int) -> None:
-        self.events: deque[tuple[float, int]] = deque()
+    __slots__ = ("counts", "window_seconds", "limit", "bucket_seconds", "last_slot")
+
+    def __init__(self, window_seconds: float, limit: int, buckets: int = 60) -> None:
+        self.counts = [0] * buckets
         self.window_seconds = window_seconds
         self.limit = limit
+        self.bucket_seconds = window_seconds / buckets
+        self.last_slot = 0
 
-    def _trim(self, now: float) -> None:
-        cutoff = now - self.window_seconds
-        while self.events and self.events[0][0] < cutoff:
-            self.events.popleft()
+    def _advance(self, now: float) -> int:
+        slot = int(now // self.bucket_seconds)
+        size = len(self.counts)
+        if slot - self.last_slot >= size:
+            self.counts = [0] * size
+        else:
+            for s in range(self.last_slot + 1, slot + 1):
+                self.counts[s % size] = 0
+        self.last_slot = max(slot, self.last_slot)
+        return slot
 
     def current_total(self, now: float | None = None) -> int:
-        now = now if now is not None else time.monotonic()
-        self._trim(now)
-        return sum(v for _, v in self.events)
+        self._advance(now if now is not None else time.time())
+        return sum(self.counts)
 
     def would_exceed(self, amount: int, now: float | None = None) -> bool:
-        now = now if now is not None else time.monotonic()
         return self.current_total(now) + amount > self.limit
 
     def record(self, amount: int, now: float | None = None) -> None:
-        now = now if now is not None else time.monotonic()
-        self.events.append((now, amount))
+        slot = self._advance(now if now is not None else time.time())
+        self.counts[slot % len(self.counts)] += amount
+
+    def dump(self) -> dict:
+        return {"start": self.last_slot * self.bucket_seconds, "counts": list(self.counts)}
+
+    def load(self, data: dict) -> None:
+        counts = data.get("counts")
+        if isinstance(counts, list) and len(counts) == len(self.counts):
+            self.counts = [int(c) for c in counts]
+            self.last_slot = int(round(float(data["start"]) / self.bucket_seconds))
 
 
 @dataclass

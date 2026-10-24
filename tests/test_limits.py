@@ -41,3 +41,38 @@ def test_no_limits_configured_means_unbounded():
     for _ in range(1000):
         assert state.has_request_budget()
         state.record_request_start()
+
+
+from app.core.limits import _SlidingWindowCounter
+
+
+def test_counter_memory_constant():
+    counter = _SlidingWindowCounter(60.0, 10**9)
+    for i in range(100_000):
+        counter.record(1, now=i * 0.01)
+    assert len(counter.counts) == 60
+
+
+def test_counter_expires_after_window():
+    counter = _SlidingWindowCounter(60.0, 10)
+    counter.record(1, now=0.0)
+    assert counter.current_total(now=59.5) == 1
+    assert counter.current_total(now=61.0) == 0
+
+
+def test_counter_limit_at_edge():
+    counter = _SlidingWindowCounter(60.0, 5)
+    for _ in range(5):
+        counter.record(1, now=100.0)
+    assert counter.would_exceed(1, now=100.0) is True
+    assert counter.would_exceed(0, now=100.0) is False
+
+
+def test_counter_dump_load_round_trip():
+    counter = _SlidingWindowCounter(3600.0, 100)
+    counter.record(3, now=1000.0)
+    counter.record(4, now=1100.0)
+    restored = _SlidingWindowCounter(3600.0, 100)
+    restored.load(counter.dump())
+    assert restored.current_total(now=1200.0) == 7
+    assert restored.current_total(now=1000.0 + 3600 + 120) == 0
