@@ -7,7 +7,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import JSONResponse
 
-from app.admin import config_api
+from app.admin import config_api, insights
 from app.admin import status as admin_status
 from app.admin import ui as admin_ui
 from app.api import chat, embeddings, models, responses
@@ -55,6 +55,7 @@ def create_app() -> FastAPI:
     app.include_router(responses.router)
     app.include_router(admin_status.router)
     app.include_router(config_api.router)
+    app.include_router(insights.router)
     return app
 
 

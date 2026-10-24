@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from app.core.health import HealthRegistry
 from app.core.limits import LimitsRegistry
 from app.core.provider_checks import ProviderHealthMonitor
+from app.core.request_log import RequestLog
+from app.core.timeseries import LatencyHistogram, MinuteSeries
 from app.core.retry import Scheduler
 from app.core.usage import UsageRegistry
 from app.models.provider import OctoFluxConfig
@@ -22,6 +24,9 @@ class AppState:
     usage: UsageRegistry
     scheduler: Scheduler
     health_monitor: ProviderHealthMonitor
+    request_log: RequestLog = field(default_factory=RequestLog)
+    series: MinuteSeries = field(default_factory=MinuteSeries)
+    latency: LatencyHistogram = field(default_factory=LatencyHistogram)
     _flusher: asyncio.Task | None = field(default=None, repr=False)
 
     @classmethod
@@ -31,11 +36,14 @@ class AppState:
         limits = LimitsRegistry()
         usage = UsageRegistry(db_path=usage_db or os.environ.get("OctoFlux_USAGE_DB", "data/usage.db"))
         limits.load(usage.load_limits(), config)
-        scheduler = Scheduler(config, providers, health, limits, usage)
+        request_log, series, latency = RequestLog(), MinuteSeries(), LatencyHistogram()
+        series.load(usage.load_blob("timeseries"))
+        scheduler = Scheduler(config, providers, health, limits, usage, request_log, series, latency)
         health_monitor = ProviderHealthMonitor(config, providers, health)
         return cls(
             config=config, providers=providers, health=health, limits=limits, usage=usage,
             scheduler=scheduler, health_monitor=health_monitor,
+            request_log=request_log, series=series, latency=latency,
         )
 
     def replace_config(self, new_config: OctoFluxConfig) -> "AppState":
@@ -43,16 +51,20 @@ class AppState:
         the existing health/limits/usage registries so live state (cooldowns,
         counters) survives for targets that still exist."""
         providers = ProviderRegistry(new_config)
-        scheduler = Scheduler(new_config, providers, self.health, self.limits, self.usage)
+        scheduler = Scheduler(
+            new_config, providers, self.health, self.limits, self.usage, self.request_log, self.series, self.latency
+        )
         health_monitor = ProviderHealthMonitor(new_config, providers, self.health)
         return AppState(
             config=new_config, providers=providers, health=self.health,
             limits=self.limits, usage=self.usage, scheduler=scheduler, health_monitor=health_monitor,
+            request_log=self.request_log, series=self.series, latency=self.latency,
             _flusher=self._flusher,
         )
 
     def flush(self) -> None:
         self.usage.save_limits(self.limits.dump())
+        self.usage.save_blob("timeseries", self.series.dump())
         self.usage.flush()
 
     def start_flusher(self, interval: float = 60.0) -> None:

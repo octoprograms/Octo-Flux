@@ -28,6 +28,8 @@ from app.core.errors import (
 from app.core.health import HealthRegistry
 from app.core.limits import LimitsRegistry, effective_key_limits
 from app.core.ratelimit_headers import parse_rate_limit_headers
+from app.core.request_log import RequestLog, RequestRecord
+from app.core.timeseries import LatencyHistogram, MinuteSeries
 from app.core.router import Candidate, Router
 from app.core.usage import UsageRegistry
 from app.models.provider import OctoFluxConfig
@@ -66,6 +68,8 @@ class ChatCompletionResult:
     key_name: str
     trace: list[AttemptTrace]
     stream: AsyncIterator[bytes] | None = None
+    input_tokens: int = 0
+    output_tokens: int = 0
 
 
 async def _end_when_done(stream: AsyncIterator[bytes], states: list) -> AsyncIterator[bytes]:
@@ -119,12 +123,18 @@ class Scheduler:
         health: HealthRegistry,
         limits: LimitsRegistry,
         usage: UsageRegistry,
+        request_log: RequestLog | None = None,
+        series: MinuteSeries | None = None,
+        latency: LatencyHistogram | None = None,
     ) -> None:
         self.config = config
         self.providers = providers
         self.health = health
         self.limits = limits
         self.usage = usage
+        self.request_log = request_log or RequestLog()
+        self.series = series or MinuteSeries()
+        self.latency = latency or LatencyHistogram()
         self.router = Router(config, health, limits, usage, providers)
 
     def apply_failure(self, candidate: Candidate, category: ErrorCategory, retry_after: float | None) -> FailureScope:
@@ -261,6 +271,53 @@ class Scheduler:
         operation: str,
         call: Callable[[Any, Candidate], Awaitable[UpstreamSuccess | UpstreamFailure]],
     ) -> ChatCompletionResult:
+        """Runs the request and records it (metadata only, never content) in the request log."""
+        started_at, start = time.time(), time.perf_counter()
+        trace: list[AttemptTrace] = []
+        result: ChatCompletionResult | None = None
+        status = 500
+        try:
+            result = await self._run_operation(
+                requested_model=requested_model, payload=payload, request_id=request_id,
+                capability=capability, operation=operation, call=call, trace=trace,
+            )
+            status = 200
+            return result
+        except ClientFacingError as err:
+            status = err.status_code
+            raise
+        finally:
+            self.request_log.add(RequestRecord(
+                id=request_id,
+                started_at=started_at,
+                requested_model=requested_model,
+                upstream_model=result.model_id if result else None,
+                provider=result.provider_id if result else None,
+                key=result.key_name if result else None,
+                status=status,
+                latency_ms=round((time.perf_counter() - start) * 1000, 1),
+                input_tokens=result.input_tokens if result else 0,
+                output_tokens=result.output_tokens if result else 0,
+                stream=operation.endswith(".stream"),
+                attempts=[
+                    {"provider": t.provider_id, "model": t.model_id, "key": t.key_name,
+                     "outcome": t.outcome, "latency_ms": round(t.latency_ms, 1)}
+                    for t in trace
+                ],
+                operation=operation,
+            ))
+
+    async def _run_operation(
+        self,
+        *,
+        requested_model: str,
+        payload: dict[str, Any],
+        request_id: str,
+        capability: str,
+        operation: str,
+        call: Callable[[Any, Candidate], Awaitable[UpstreamSuccess | UpstreamFailure]],
+        trace: list[AttemptTrace],
+    ) -> ChatCompletionResult:
         resolution = await self.router.resolve_dynamic(requested_model, payload=payload, capability=capability)
         if not resolution.model_found:
             raise ClientFacingError(
@@ -286,7 +343,6 @@ class Scheduler:
 
         max_attempts = self.config.routing.max_total_attempts
         attempted: set[tuple[str, str, str]] = set()
-        trace: list[AttemptTrace] = []
         attempt_number = 0
         last_error: ClientFacingError | None = None
         skipped_models: set[tuple[str, str]] = set()
@@ -352,6 +408,8 @@ class Scheduler:
                     result.input_tokens, result.output_tokens,
                 )
                 trace.append(AttemptTrace(candidate.provider_id, candidate.model_id, candidate.key.name, "success", result.latency_ms))
+                self.series.record(candidate.provider_id, True, result.input_tokens + result.output_tokens)
+                self.latency.observe(candidate.provider_id, result.latency_ms)
                 log_event(
                     "upstream_success", request_id=request_id, provider=candidate.provider_id,
                     operation=operation, model=candidate.model_id, key=candidate.key.name,
@@ -366,6 +424,8 @@ class Scheduler:
                     key_name=candidate.key.name,
                     trace=trace,
                     stream=result.stream,
+                    input_tokens=result.input_tokens,
+                    output_tokens=result.output_tokens,
                 )
 
             # Failure path
@@ -381,6 +441,7 @@ class Scheduler:
                 retry_after = parse_retry_after(result.headers) if result.headers is not None else None
 
             trace.append(AttemptTrace(candidate.provider_id, candidate.model_id, candidate.key.name, category.value, result.latency_ms))
+            self.series.record(candidate.provider_id, False, 0)
             failure_scope = self.apply_failure(candidate, category, retry_after)
             self._record_rate_limit(candidate, result.headers)
             if failure_scope == FailureScope.MODEL:

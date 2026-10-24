@@ -144,6 +144,27 @@ class UsageRegistry:
         with self._lock:
             self._persist()
 
+    def save_blob(self, name: str, data: object) -> None:
+        if self._connection is None:
+            return
+        import json
+
+        with self._lock, self._connection:
+            self._connection.execute(
+                "INSERT INTO usage_meta(name, value) VALUES (?, ?) "
+                "ON CONFLICT(name) DO UPDATE SET value = excluded.value",
+                (name, json.dumps(data)),
+            )
+
+    def load_blob(self, name: str) -> object | None:
+        if self._connection is None:
+            return None
+        import json
+
+        with self._lock:
+            row = self._connection.execute("SELECT value FROM usage_meta WHERE name = ?", (name,)).fetchone()
+        return json.loads(row[0]) if row else None
+
     def save_limits(self, rows: list[tuple[str, str, str, dict]]) -> None:
         if self._connection is None:
             return
