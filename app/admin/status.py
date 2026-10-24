@@ -71,6 +71,9 @@ async def admin_status(state: AppState = Depends(get_state)) -> dict:
                 "status": kh.status(provider.health.failure_threshold).value,
                 "consecutive_failures": kh.consecutive_failures,
                 "seconds_until_available": round(kh.seconds_until_available(), 1),
+                "remaining_requests": kh.remaining_requests,
+                "remaining_tokens": kh.remaining_tokens,
+                "resets_at": kh.resets_at,
                 "health_check": {
                     "status": "working" if kh.last_check_ok else "unhealthy" if kh.last_check_ok is False else "unknown",
                     "key_hint": mask_api_key(key.value),

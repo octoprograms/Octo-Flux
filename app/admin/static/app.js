@@ -135,6 +135,110 @@ export function showFieldErrors(root, err) {
   }
 }
 
+// ---------- config editor ----------
+
+export function getPath(obj, path) {
+  return path.split(".").reduce((node, part) => (node == null ? undefined : node[part]), obj);
+}
+
+export function setPath(obj, path, value) {
+  const parts = path.split(".");
+  let node = obj;
+  parts.slice(0, -1).forEach((part, i) => {
+    if (node[part] == null) node[part] = /^\d+$/.test(parts[i + 1]) ? [] : {};
+    node = node[part];
+  });
+  const last = parts.at(-1);
+  if (value === undefined) delete node[last];
+  else node[last] = value;
+}
+
+function readInput(input) {
+  const type = input.dataset.type || "str";
+  if (type === "bool") return input.checked;
+  const raw = input.value.trim();
+  if (raw === "") return input.dataset.required ? "" : undefined; // empty optional field = unset
+  if (type === "int") return Number.parseInt(raw, 10);
+  if (type === "float") return Number.parseFloat(raw);
+  if (type === "list") return raw.split(",").map((s) => s.trim()).filter(Boolean);
+  return raw;
+}
+
+/**
+ * Edits a working copy of the whole config. Inputs with data-path (and data-type int|float|bool|list|str)
+ * write into it; `draw(config, editor)` renders the page; a save bar appears once something changed.
+ */
+export async function configEditor(main, draw) {
+  let loaded = await loadConfig();
+  let config = structuredClone(loaded.config);
+  let dirty = false;
+
+  const bar = el(`<div class="savebar" hidden role="region" aria-label="Unsaved changes">
+    <span>You have unsaved changes.</span>
+    <span class="row"><button class="btn ghost" data-discard style="color:inherit">Discard</button><button class="btn accent" data-save>Save changes</button></span>
+  </div>`);
+
+  const editor = {
+    get config() { return config; },
+    get version() { return loaded.version; },
+    get saved() { return loaded.config; },
+    changed() { dirty = true; bar.hidden = false; },
+    redraw() { draw(config, editor); },
+    async save() {
+      const button = bar.querySelector("[data-save]");
+      button.disabled = true;
+      try {
+        await saveConfig(loaded.version, config);
+        loaded = await loadConfig();
+        config = structuredClone(loaded.config);
+        dirty = false;
+        bar.hidden = true;
+        editor.redraw();
+        return true;
+      } catch (err) {
+        if (err.status === 422) showFieldErrors(main, err);
+        return false;
+      } finally {
+        button.disabled = false;
+      }
+    },
+  };
+
+  const onEdit = (event) => {
+    const input = event.target.closest("[data-path]");
+    if (!input || !main.contains(input)) return;
+    setPath(config, input.dataset.path, readInput(input));
+    editor.changed();
+  };
+  main.addEventListener("change", onEdit);
+  bar.querySelector("[data-save]").addEventListener("click", () => editor.save());
+  bar.querySelector("[data-discard]").addEventListener("click", () => {
+    config = structuredClone(loaded.config);
+    dirty = false;
+    bar.hidden = true;
+    editor.redraw();
+  });
+  main.after(bar);
+  const warn = (event) => { if (dirty) event.preventDefault(); };
+  window.addEventListener("beforeunload", warn);
+  editor.redraw();
+  return { editor, cleanup: () => { bar.remove(); window.removeEventListener("beforeunload", warn); } };
+}
+
+/** A labelled input bound to `path` in the working config. */
+export function field(label, path, value, { type = "str", hint = "", placeholder = "", input = "text", required = false } = {}) {
+  const htmlType = type === "int" || type === "float" ? "number" : input;
+  const step = type === "float" ? ' step="any"' : "";
+  const shown = Array.isArray(value) ? value.join(", ") : value ?? "";
+  return `<label class="field"><span>${esc(label)}</span>
+    <input type="${htmlType}"${step} data-path="${esc(path)}" data-type="${type}"${required ? ' data-required="1" required' : ""} value="${esc(shown)}" placeholder="${esc(placeholder)}">
+    ${hint ? `<small>${esc(hint)}</small>` : ""}</label>`;
+}
+
+export function toggle(label, path, checked) {
+  return `<label class="switch"><input type="checkbox" data-path="${esc(path)}" data-type="bool"${checked ? " checked" : ""}>${esc(label)}</label>`;
+}
+
 // ---------- UI primitives ----------
 
 export function toast(message, kind = "") {

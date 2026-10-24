@@ -61,3 +61,12 @@ def test_admin_health_has_details():
 
 def test_require_auth_false_does_not_open_admin():
     assert _client(require_auth="false").get("/admin/status").status_code == 401
+
+
+def test_admin_status_reports_upstream_remaining():
+    from app.core.ratelimit_headers import RateLimitInfo
+
+    client = _client()
+    client.app.state.OctoFlux.health.key("alpha", "a1").record_rate_limit(RateLimitInfo(7, 900, 1_900_000_000.0))
+    key = client.get("/admin/status", headers=_bearer("admin-1")).json()["providers"]["alpha"]["keys"]["a1"]
+    assert (key["remaining_requests"], key["remaining_tokens"], key["resets_at"]) == (7, 900, 1_900_000_000.0)

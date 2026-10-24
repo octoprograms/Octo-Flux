@@ -200,7 +200,7 @@ td.num, th.num { text-align: right; }
 
 /* ---------- Forms ---------- */
 
-.field { display: grid; gap: 5px; font-size: 13.5px; color: var(--ink-soft); }
+.field { display: grid; gap: 5px; align-content: start; font-size: 13.5px; color: var(--ink-soft); }
 .field > span { font-weight: 500; }
 .field small { color: var(--muted); }
 .field .error { color: var(--danger); font-size: 13px; }
@@ -323,3 +323,12 @@ dialog p { margin: 0; color: var(--ink-soft); }
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
 }
+
+details { border-top: 1px solid var(--line); padding-top: 12px; }
+summary { cursor: pointer; font-weight: 520; color: var(--ink-soft); list-style: none; display: flex; align-items: center; gap: 8px; }
+summary::-webkit-details-marker { display: none; }
+summary::before { content: ""; width: 7px; height: 7px; border-right: 1.8px solid currentColor; border-bottom: 1.8px solid currentColor; transform: rotate(-45deg); transition: transform 0.15s; }
+details[open] > summary::before { transform: rotate(45deg); }
+details > p { margin: 8px 0 10px; }
+.icon-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+.row > select, .row > input { width: auto; flex: 1 1 200px; }

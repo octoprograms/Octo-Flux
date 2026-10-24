@@ -3,13 +3,15 @@ import { esc } from "./app.js";
 
 let uid = 0;
 
-function smoothPath(points) {
+function smoothPath(points, minY = -Infinity, maxY = Infinity) {
+  // Clamp control points so the curve never overshoots the chart (e.g. below zero next to a spike).
+  const clampY = (y) => Math.min(maxY, Math.max(minY, y));
   if (points.length < 2) return points.length ? `M${points[0][0]},${points[0][1]}` : "";
   let d = `M${points[0][0]},${points[0][1]}`;
   for (let i = 0; i < points.length - 1; i++) {
     const [p0, p1, p2, p3] = [points[i - 1] || points[i], points[i], points[i + 1], points[i + 2] || points[i + 1]];
-    const c1 = [p1[0] + (p2[0] - p0[0]) / 6, p1[1] + (p2[1] - p0[1]) / 6];
-    const c2 = [p2[0] - (p3[0] - p1[0]) / 6, p2[1] - (p3[1] - p1[1]) / 6];
+    const c1 = [p1[0] + (p2[0] - p0[0]) / 6, clampY(p1[1] + (p2[1] - p0[1]) / 6)];
+    const c2 = [p2[0] - (p3[0] - p1[0]) / 6, clampY(p2[1] - (p3[1] - p1[1]) / 6)];
     d += ` C${c1[0].toFixed(1)},${c1[1].toFixed(1)} ${c2[0].toFixed(1)},${c2[1].toFixed(1)} ${p2[0].toFixed(1)},${p2[1].toFixed(1)}`;
   }
   return d;
@@ -27,8 +29,8 @@ export function sparkline(values, { compare = null, title = "Trend", width = 280
   const grid = [0.25, 0.5, 0.75].map((f) => `<line x1="0" x2="${width}" y1="${(height * f).toFixed(1)}" y2="${(height * f).toFixed(1)}" stroke="rgba(60,44,28,.12)" stroke-dasharray="3 5"/>`).join("");
   return `<svg class="chart" viewBox="0 0 ${width} ${height}" role="img" preserveAspectRatio="none">
     <title>${esc(title)}</title>${grid}
-    ${compare ? `<path d="${smoothPath(toPoints(compare))}" fill="none" stroke="#a8a1b8" stroke-width="1.6" stroke-dasharray="4 4" vector-effect="non-scaling-stroke"/>` : ""}
-    <path d="${smoothPath(toPoints(values))}" fill="none" stroke="#ef6a24" stroke-width="2.2" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+    ${compare ? `<path d="${smoothPath(toPoints(compare), pad, height - pad)}" fill="none" stroke="#a8a1b8" stroke-width="1.6" stroke-dasharray="4 4" vector-effect="non-scaling-stroke"/>` : ""}
+    <path d="${smoothPath(toPoints(values), pad, height - pad)}" fill="none" stroke="#ef6a24" stroke-width="2.2" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
   </svg>`;
 }
 
