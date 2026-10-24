@@ -6,7 +6,6 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
 
 from app.admin import config_api, insights
 from app.admin import status as admin_status
@@ -51,7 +50,7 @@ def create_app() -> FastAPI:
 
     app.include_router(admin_ui.router)
     # Dashboard assets hold no data, so they are public; the API they call is admin-only.
-    app.mount("/admin/static", StaticFiles(directory=admin_ui.STATIC_DIR), name="admin-static")
+    app.mount("/admin/static", admin_ui.DashboardStatic(directory=admin_ui.STATIC_DIR), name="admin-static")
     app.include_router(models.router)
     app.include_router(chat.router)
     app.include_router(embeddings.router)

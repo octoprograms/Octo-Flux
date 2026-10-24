@@ -52,6 +52,25 @@ export function el(html) {
   return t.content.firstElementChild;
 }
 
+/** Ordered list of upstream attempts for one request (the failover path). */
+export function traceList(attempts) {
+  if (!attempts?.length) return `<p class="muted">No upstream attempt was made. No provider or key was available.</p>`;
+  return `<ol class="trace">${attempts.map((a, i) => {
+    const ok = a.outcome === "success";
+    return `<li>
+      <span class="step ${ok ? "ok" : "bad"}" aria-hidden="true">${i + 1}</span>
+      <div><strong>${esc(a.provider)}</strong> <span class="muted">/ ${esc(a.model)}</span><br>
+        <span class="muted">key ${esc(a.key)}</span></div>
+      <div style="text-align:right"><span class="badge ${ok ? "ok" : "bad"}">${esc(a.outcome.replaceAll("_", " "))}</span><br>
+        <span class="muted">${fmt.ms(a.latency_ms)}</span></div>
+    </li>`;
+  }).join("")}</ol>`;
+}
+
+export function statusCodeBadge(code) {
+  return `<span class="badge ${code < 300 ? "ok" : code < 500 ? "warn" : "bad"}">${esc(code)}</span>`;
+}
+
 // ---------- API ----------
 
 export class ApiError extends Error {
