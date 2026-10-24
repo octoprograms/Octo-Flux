@@ -11,7 +11,8 @@
 <body>
   <div id="app"></div>
   <noscript>The OctoFlux dashboard needs JavaScript.</noscript>
-  <script type="module">
+  <!-- data-cfasync=false: Cloudflare Rocket Loader rewrites script types and breaks ES modules (blank page). -->
+  <script type="module" data-cfasync="false">
     import { start } from "/admin/static/app.js";
     import "/admin/static/pages/overview.js";
     import "/admin/static/pages/requests.js";
