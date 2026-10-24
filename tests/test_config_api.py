@@ -160,3 +160,53 @@ def test_put_hot_reloads(client):
     assert _put(client, body["version"], body["config"]).status_code == 200
     status = client.get("/admin/status", headers=ADMIN).json()
     assert status["providers"]["alpha"]["enabled"] is False
+
+
+def _save_once(client, priority: int) -> None:
+    body = client.get("/admin/config", headers=ADMIN).json()
+    body["config"]["providers"]["alpha"]["models"][0]["priority"] = priority
+    assert _put(client, body["version"], body["config"]).status_code == 200
+
+
+def test_list_backups_newest_first(client, cfg_path):
+    _save_once(client, 1)
+    _save_once(client, 2)
+    backups = client.get("/admin/config/backups", headers=ADMIN).json()["backups"]
+    assert len(backups) == 2
+    assert set(backups[0]) == {"name", "created_at", "size"}
+    # Newest backup = the file as it was before the second save (priority 1).
+    assert "priority: 1" in (cfg_path.parent / "backups" / backups[0]["name"]).read_text(encoding="utf-8")
+    assert "priority: 1" not in (cfg_path.parent / "backups" / backups[1]["name"]).read_text(encoding="utf-8")
+
+
+def test_restore_backup_applies_and_backs_up_current(client, cfg_path):
+    _save_once(client, 7)
+    oldest = client.get("/admin/config/backups", headers=ADMIN).json()["backups"][-1]["name"]
+    backup_bytes = (cfg_path.parent / "backups" / oldest).read_bytes()
+    resp = client.post(f"/admin/config/backups/{oldest}/restore", headers=ADMIN)
+    assert resp.status_code == 200, resp.text
+    assert cfg_path.read_bytes() == backup_bytes
+    backups = client.get("/admin/config/backups", headers=ADMIN).json()["backups"]
+    assert len(backups) == 2
+    assert "priority: 7" in (cfg_path.parent / "backups" / backups[0]["name"]).read_text(encoding="utf-8")
+
+
+def test_restore_unknown_name_404(client):
+    resp = client.post("/admin/config/backups/..%2FOctoFlux.yaml/restore", headers=ADMIN)
+    assert resp.status_code == 404
+    resp = client.post("/admin/config/backups/OctoFlux.20990101T000000Z.yaml/restore", headers=ADMIN)
+    assert resp.status_code == 404
+    assert resp.json()["error"]["type"] == "backup_not_found"
+
+
+def test_restore_with_unset_env_var_422(client, cfg_path):
+    _save_once(client, 3)
+    name = client.get("/admin/config/backups", headers=ADMIN).json()["backups"][0]["name"]
+    backup = cfg_path.parent / "backups" / name
+    backup.write_text(backup.read_text(encoding="utf-8").replace("${GROQ_KEY}", "${MISSING}"), encoding="utf-8")
+    before = cfg_path.read_bytes()
+    running = client.app.state.OctoFlux.config
+    resp = client.post(f"/admin/config/backups/{name}/restore", headers=ADMIN)
+    assert resp.status_code == 422
+    assert cfg_path.read_bytes() == before
+    assert client.app.state.OctoFlux.config is running

@@ -145,7 +145,28 @@ def _backups(path: Path) -> list[Path]:
     return sorted((p for p in folder.iterdir() if _BACKUP_RE.match(p.name)), key=_backup_sort_key, reverse=True)
 
 
-def write_with_backup(path: Path, raw: dict) -> str:
+def list_backups(path: Path) -> list[dict]:
+    out = []
+    for p in _backups(path):
+        stamp = datetime.strptime(_backup_sort_key(p)[0], "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+        out.append({"name": p.name, "created_at": stamp.isoformat(), "size": p.stat().st_size})
+    return out
+
+
+def read_backup(path: Path, name: str) -> tuple[dict, bytes]:
+    # The name must come from the listing; it is never used as a raw path.
+    match = next((p for p in _backups(path) if p.name == name), None)
+    if match is None:
+        raise ConfigStoreError(404, "backup_not_found", f"No backup named {name!r}.")
+    data = match.read_bytes()
+    try:
+        return load_yaml_text(data.decode("utf-8")), data
+    except ConfigError as exc:
+        raise ConfigStoreError(422, "invalid_config", str(exc)) from exc
+
+
+def write_with_backup(path: Path, raw: dict, data: bytes | None = None) -> str:
+    """Back up the current file, then write `data` (or `raw` dumped as YAML) atomically."""
     folder = path.parent / "backups"
     folder.mkdir(exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -157,7 +178,8 @@ def write_with_backup(path: Path, raw: dict) -> str:
     for old in _backups(path)[KEEP_BACKUPS:]:
         old.unlink()
 
-    data = yaml.safe_dump(raw, sort_keys=False, allow_unicode=True).encode("utf-8")
+    if data is None:
+        data = yaml.safe_dump(raw, sort_keys=False, allow_unicode=True).encode("utf-8")
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_bytes(data)
     os.replace(tmp, path)
