@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import secrets
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
@@ -73,3 +74,19 @@ async def restore_backup(name: str, request: Request):
         return {"version": await save_raw(request, raw, None, data)}
     except ConfigStoreError as exc:
         return _error(exc)
+
+
+@router.post("/admin/client-keys")
+async def create_client_key(request: Request):
+    """Generates a client key, saves it, and returns it. This response is the only time it is shown in full."""
+    key = "octo-" + secrets.token_urlsafe(24)
+    try:
+        raw, version = config_store.read_raw(config_store.config_path())
+        server = raw.setdefault("server", {}) or {}
+        raw["server"] = server
+        server["client_keys"] = [*(server.get("client_keys") or []), key]
+        await save_raw(request, raw, version)
+    except ConfigStoreError as exc:
+        return _error(exc)
+    log_event("client_key_created", admin=request.state.admin_name, key_hint=key[-4:])
+    return {"key": key}

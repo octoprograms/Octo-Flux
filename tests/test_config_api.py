@@ -210,3 +210,22 @@ def test_restore_with_unset_env_var_422(client, cfg_path):
     assert resp.status_code == 422
     assert cfg_path.read_bytes() == before
     assert client.app.state.OctoFlux.config is running
+
+
+def test_create_client_key_returned_once(client, cfg_path):
+    resp = client.post("/admin/client-keys", headers=ADMIN)
+    assert resp.status_code == 200, resp.text
+    key = resp.json()["key"]
+    assert key.startswith("octo-") and len(key) > 30
+    assert key in _file(cfg_path)["server"]["client_keys"]
+    masked = client.get("/admin/config", headers=ADMIN).json()["config"]["server"]["client_keys"]
+    assert key not in masked and f"•••• {key[-4:]}" in masked
+    assert client.get("/v1/models", headers={"Authorization": f"Bearer {key}"}).status_code == 200
+
+
+def test_revoke_client_key_by_removing_masked_entry(client, cfg_path):
+    new_key = client.post("/admin/client-keys", headers=ADMIN).json()["key"]
+    body = client.get("/admin/config", headers=ADMIN).json()
+    body["config"]["server"]["client_keys"] = body["config"]["server"]["client_keys"][1:]  # drop the original
+    assert _put(client, body["version"], body["config"]).status_code == 200
+    assert _file(cfg_path)["server"]["client_keys"] == [new_key]

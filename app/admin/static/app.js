@@ -182,6 +182,7 @@ export async function configEditor(main, draw) {
     get config() { return config; },
     get version() { return loaded.version; },
     get saved() { return loaded.config; },
+    get dirty() { return dirty; },
     changed() { dirty = true; bar.hidden = false; },
     redraw() { draw(config, editor); },
     async save() {
