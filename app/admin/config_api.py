@@ -76,6 +76,25 @@ async def restore_backup(name: str, request: Request):
         return _error(exc)
 
 
+@router.delete("/admin/client-keys/{index}")
+async def revoke_client_key(index: int, version: str, request: Request):
+    """Removes server.client_keys[index] by position, so revoking never depends on matching masks."""
+    try:
+        raw, current = config_store.read_raw(config_store.config_path())
+        if current != version:
+            raise ConfigStoreError(409, "config_conflict", "The config changed since it was loaded — reload and retry.")
+        keys = list((raw.get("server") or {}).get("client_keys") or [])
+        if not 0 <= index < len(keys):
+            raise ConfigStoreError(404, "client_key_not_found", f"No client key at position {index}.")
+        removed = keys.pop(index)
+        raw["server"]["client_keys"] = keys
+        new_version = await save_raw(request, raw, version)
+    except ConfigStoreError as exc:
+        return _error(exc)
+    log_event("client_key_revoked", admin=request.state.admin_name, key_hint=str(removed)[-4:] if "${" not in str(removed) else "env")
+    return {"version": new_version}
+
+
 @router.post("/admin/client-keys")
 async def create_client_key(request: Request):
     """Generates a client key, saves it, and returns it. This response is the only time it is shown in full."""

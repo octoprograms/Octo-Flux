@@ -355,3 +355,27 @@ async def test_logs_distinguish_requested_and_upstream_models(monkeypatch):
     routing = next(fields for event, fields in events if event == "routing_decision")
     assert routing["requested_model"] == "auto"
     assert routing["upstream_model"] == "configured-free-model"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_slow_discovery_does_not_stall_auto(monkeypatch):
+    import asyncio
+    import time
+
+    import app.core.router as router_module
+
+    monkeypatch.setattr(router_module, "DISCOVERY_WAIT_SECONDS", 0.2)
+
+    async def slow(request):
+        await asyncio.sleep(2)
+        return httpx.Response(200, json={"data": [free_model("late/model:free")]})
+
+    respx.get("http://openrouter.test/v1/models?dynamic=1").mock(side_effect=slow)
+    state = AppState.build(openrouter_config(keys=1))
+
+    start = time.perf_counter()
+    resolution = await state.scheduler.router.resolve_dynamic("auto", payload={"messages": []})
+    assert time.perf_counter() - start < 1.0
+    assert [c.model_id for c in resolution.candidates] == ["configured-free-model", "openrouter/free"]
+    await state.providers.aclose()

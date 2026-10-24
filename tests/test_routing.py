@@ -137,3 +137,17 @@ def test_routing_default_is_smart():
     from app.models.provider import RoutingConfig
 
     assert RoutingConfig().default_key_selection == "smart"
+
+
+def test_smart_ignores_upstream_remaining_after_reset(tmp_path):
+    import time
+
+    from app.core.ratelimit_headers import RateLimitInfo
+
+    state = _smart_state(tmp_path)
+    health = state.health.key("solo", "A")
+    health.record_rate_limit(RateLimitInfo(10, None, None))
+    health.record_rate_limit(RateLimitInfo(0, None, time.time() - 1))  # reported empty, but the reset has passed
+    health.cooldown_until = 0.0
+    _use(state, "B", 5)
+    assert _first_key(state) == "A"

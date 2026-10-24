@@ -113,9 +113,11 @@ class Router:
         fractions = [
             1 - counter.current_total() / counter.limit
             for counter in self.limits.key(provider_id, key.name, cfg).counters.values()
+            if counter.limit > 0
         ]
         health = self.health.key(provider_id, key.name)
-        if health.remaining_requests is not None and health.max_remaining_requests:
+        reset_passed = health.resets_at is not None and time.time() >= health.resets_at
+        if health.remaining_requests is not None and health.max_remaining_requests and not reset_passed:
             fractions.append(health.remaining_requests / health.max_remaining_requests)
         return max(0.0, min(fractions, default=1.0))
 
@@ -280,7 +282,11 @@ class Router:
         for provider_id, provider in providers:
             keys = [key for key in provider.keys if key.enabled]
             if keys and provider.dynamic_models.enabled:
-                discovered[provider_id] = await self.providers.adapter(provider_id).discover_models(api_key=keys[0].value)
+                adapter = self.providers.adapter(provider_id)
+                if hasattr(adapter, "discover_models_cached"):
+                    discovered[provider_id] = await adapter.discover_models_cached(api_key=keys[0].value, wait=DISCOVERY_WAIT_SECONDS)
+                else:
+                    discovered[provider_id] = await adapter.discover_models(api_key=keys[0].value)
         self._evict_idle()
         resolution = self.resolve(requested_model, capability, payload)
 
@@ -325,6 +331,9 @@ class Router:
         resolution.candidates.sort(key=lambda c: (c.provider_priority, c.model_priority))
         return resolution
 
+
+# Longest a request waits for a cold discovery before routing without it.
+DISCOVERY_WAIT_SECONDS = 5.0
 
 _NON_CHAT_RE = re.compile(r"safety|guard|embed|moderation|rerank", re.I)
 

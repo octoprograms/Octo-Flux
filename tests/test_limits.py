@@ -226,3 +226,34 @@ def test_usage_not_written_per_request(tmp_path):
     assert calls == []
     state.usage.flush()
     assert calls == [1]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_streams_charge_estimated_tokens(tmp_path):
+    from app.core.limits import effective_key_limits
+
+    sse = b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: [DONE]\n\n'
+    respx.post("http://solo.test/v1/chat/completions").mock(
+        return_value=httpx.Response(200, content=sse, headers={"content-type": "text/event-stream"})
+    )
+    state = _state("limits: {tokens_per_minute: 1000}\n    key_selection: priority", tmp_path)
+    result = await state.scheduler.execute_chat_stream(
+        requested_model="m", payload={"messages": [{"role": "user", "content": "x" * 40}], "max_tokens": 50}, request_id="s"
+    )
+    async for _ in result.stream:
+        pass
+    provider = state.config.providers["solo"]
+    used = state.limits.key("solo", "k1", effective_key_limits(provider, provider.keys[0])).counters["tokens_per_minute"].current_total()
+    assert used == 10 + 50
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_fractional_rps_with_smart_selection(tmp_path):
+    respx.post("http://solo.test/v1/chat/completions").mock(return_value=ok_response())
+    state = _state("limits: {requests_per_second: 0.5}", tmp_path)
+    assert {await _ask(state), await _ask(state)} == {"k1", "k2"}  # one per key per 2 s
+    with pytest.raises(ClientFacingError) as exc:
+        await _ask(state)
+    assert exc.value.status_code == 503

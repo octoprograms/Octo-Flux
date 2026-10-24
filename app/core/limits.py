@@ -91,7 +91,9 @@ class LimitState:
         for field_name, window in _WINDOWS.items():
             limit = getattr(cfg, field_name)
             if limit is not None:
-                state.counters[field_name] = _SlidingWindowCounter(window, int(limit) if field_name != "requests_per_second" else int(limit))
+                if field_name == "requests_per_second" and limit < 1:
+                    window, limit = 1.0 / limit, 1
+                state.counters[field_name] = _SlidingWindowCounter(window, int(limit))
         return state
 
     def has_request_budget(self) -> bool:

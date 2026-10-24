@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
@@ -228,4 +229,15 @@ async def apply_config(app: FastAPI, new_config) -> None:
     app.state.OctoFlux = new_state
     new_state.health_monitor.start()
     await state.health_monitor.stop()
-    await old_providers.aclose()
+    # In-flight requests (and streams) still use the old clients; close them once those have had time to finish.
+    grace = max((p.request_timeout_seconds for p in state.config.providers.values()), default=60.0) + 5
+    _pending_closes.add(task := asyncio.create_task(_close_later(old_providers, grace)))
+    task.add_done_callback(_pending_closes.discard)
+
+
+_pending_closes: set = set()
+
+
+async def _close_later(providers, delay: float) -> None:
+    await asyncio.sleep(delay)
+    await providers.aclose()

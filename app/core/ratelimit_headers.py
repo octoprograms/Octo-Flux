@@ -1,6 +1,7 @@
 """Parse upstream rate-limit headers (Groq/OpenAI and OpenRouter styles)."""
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 
@@ -18,11 +19,17 @@ class RateLimitInfo:
     resets_at: float | None  # wall-clock epoch seconds
 
 
-def _int(value: str | None) -> int | None:
+def _finite(value: str) -> float | None:
     try:
-        return int(float(value)) if value is not None else None
+        number = float(value)
     except ValueError:
         return None
+    return number if math.isfinite(number) else None
+
+
+def _int(value: str | None) -> int | None:
+    number = _finite(value) if value is not None else None
+    return int(number) if number is not None else None
 
 
 def _duration_seconds(value: str) -> float | None:
@@ -34,9 +41,8 @@ def _duration_seconds(value: str) -> float | None:
 
 
 def _epoch_seconds(value: str, now: float) -> float | None:
-    try:
-        number = float(value)
-    except ValueError:
+    number = _finite(value)
+    if number is None:
         return None
     # OpenRouter sends epoch milliseconds; accept epoch seconds and plain deltas too.
     if number > 1e11:

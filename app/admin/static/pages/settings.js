@@ -72,10 +72,15 @@ register("settings", {
         }
       });
       main.querySelectorAll("[data-revoke]").forEach((b) => b.addEventListener("click", async () => {
-        if (!(await confirmDialog({ title: "Revoke this client key?", message: "Apps using it get 401 errors once you save.", confirm: "Revoke key", danger: true }))) return;
-        server.client_keys.splice(Number(b.dataset.revoke), 1);
-        editor.changed();
-        editor.redraw();
+        if (editor.dirty) return toast("Save or discard your changes first.", "error");
+        if (!(await confirmDialog({ title: "Revoke this client key?", message: "Apps using it get 401 errors right away.", confirm: "Revoke key", danger: true }))) return;
+        try {
+          await api(`/admin/client-keys/${b.dataset.revoke}?version=${encodeURIComponent(editor.version)}`, { method: "DELETE" });
+          toast("Client key revoked.", "ok");
+          rerender();
+        } catch (err) {
+          toast(err.body?.error?.message || err.message, "error");
+        }
       }));
       main.querySelectorAll("[data-remove-admin]").forEach((b) => b.addEventListener("click", async () => {
         const admin = server.admin_keys[Number(b.dataset.removeAdmin)];

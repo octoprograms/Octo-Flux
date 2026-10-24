@@ -49,6 +49,22 @@ class OpenAICompatibleProvider:
         self._discovery_at = 0.0
         self._discovery_failure_at = 0.0
         self.discovered_at: float | None = None  # wall clock of the last successful discovery
+        self._refresh: asyncio.Task | None = None
+
+    async def discover_models_cached(self, *, api_key: str, wait: float) -> list[DiscoveredModel]:
+        """Like discover_models, but never makes a request wait long: a stale list is served while a
+        background refresh runs, and a cold start waits at most `wait` seconds."""
+        settings = self.config.dynamic_models
+        if self._discovered_models and time.monotonic() - self._discovery_at < settings.refresh_interval_seconds:
+            return list(self._discovered_models)
+        if self._refresh is None or self._refresh.done():
+            self._refresh = asyncio.create_task(self.discover_models(api_key=api_key))
+        if self._discovered_models:
+            return list(self._discovered_models)
+        try:
+            return await asyncio.wait_for(asyncio.shield(self._refresh), wait)
+        except asyncio.TimeoutError:
+            return []
 
     def known_model_ids(self) -> set[str] | None:
         """Ids from the latest successful discovery, or None if there is none to trust."""
@@ -215,6 +231,8 @@ class OpenAICompatibleProvider:
             return list(self._discovered_models)
 
     async def aclose(self) -> None:
+        if self._refresh is not None and not self._refresh.done():
+            self._refresh.cancel()
         await self._client.aclose()
 
 

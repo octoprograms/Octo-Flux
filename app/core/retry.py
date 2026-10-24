@@ -26,7 +26,7 @@ from app.core.errors import (
     parse_retry_after,
 )
 from app.core.health import HealthRegistry
-from app.core.limits import LimitsRegistry, effective_key_limits
+from app.core.limits import LimitsRegistry, effective_key_limits, estimate_tokens
 from app.core.ratelimit_headers import parse_rate_limit_headers
 from app.core.request_log import RequestLog, RequestRecord
 from app.core.timeseries import LatencyHistogram, MinuteSeries
@@ -72,14 +72,14 @@ class ChatCompletionResult:
     output_tokens: int = 0
 
 
-async def _end_when_done(stream: AsyncIterator[bytes], states: list) -> AsyncIterator[bytes]:
+async def _end_when_done(stream: AsyncIterator[bytes], states: list, tokens: int = 0) -> AsyncIterator[bytes]:
     # Streams stay "in flight" for concurrency limits until the body finishes.
     try:
         async for chunk in stream:
             yield chunk
     finally:
         for state in states:
-            state.record_request_end()
+            state.record_request_end(tokens)
 
 
 async def _open_stream(
@@ -389,8 +389,8 @@ class Scheduler:
 
             limit_states = [provider_limit_state, key_limit_state]
             if isinstance(result, UpstreamSuccess) and result.stream is not None:
-                # shortcut: streamed tokens are not counted toward token limits; parse the final usage chunk if that matters.
-                result.stream = _end_when_done(result.stream, limit_states)
+                # shortcut: streams charge the pre-request estimate, not the real usage; parse the final usage chunk if precision matters.
+                result.stream = _end_when_done(result.stream, limit_states, estimate_tokens(payload))
             else:
                 tokens_used = result.input_tokens + result.output_tokens if isinstance(result, UpstreamSuccess) else 0
                 for state in limit_states:

@@ -95,9 +95,11 @@ def unmask_secrets(new: dict, old: dict) -> dict:
     old_clients = [v for v in old_server.get("client_keys") or [] if isinstance(v, str)]
     clients = server.get("client_keys")
     if isinstance(clients, list):
+        # Client keys have no names: position is only trustworthy when nothing was added or removed.
+        positional = len(clients) == len(old_clients)
         for i, value in enumerate(clients):
             if _is_mask(value):
-                same = old_clients[i] if i < len(old_clients) else None
+                same = old_clients[i] if positional else None
                 clients[i] = _resolve_mask(value, same, old_clients, f"server.client_keys[{i}]")
 
     old_admin = {k.get("name"): k.get("value") for k in old_server.get("admin_keys") or [] if isinstance(k, dict)}

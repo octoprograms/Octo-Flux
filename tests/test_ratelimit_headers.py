@@ -55,3 +55,10 @@ def test_absurd_reset_headers_clamped():
     )
     assert past.resets_at is None
     assert parse_rate_limit_headers(httpx.Headers({"x-ratelimit-remaining-requests": "lots"}), NOW) is None
+
+
+def test_non_finite_headers_ignored():
+    assert parse_rate_limit_headers(httpx.Headers({"x-ratelimit-remaining-requests": "inf"}), NOW) is None
+    assert parse_rate_limit_headers(httpx.Headers({"x-ratelimit-remaining-requests": "1e999"}), NOW) is None
+    info = parse_rate_limit_headers(httpx.Headers({"x-ratelimit-remaining": "0", "x-ratelimit-reset": "nan"}), NOW)
+    assert info.resets_at is None

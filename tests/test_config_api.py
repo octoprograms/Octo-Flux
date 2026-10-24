@@ -229,3 +229,40 @@ def test_revoke_client_key_by_removing_masked_entry(client, cfg_path):
     body["config"]["server"]["client_keys"] = body["config"]["server"]["client_keys"][1:]  # drop the original
     assert _put(client, body["version"], body["config"]).status_code == 200
     assert _file(cfg_path)["server"]["client_keys"] == [new_key]
+
+
+SHORT_KEYS = CONFIG.replace('client_keys: ["client-secret-9999"]', 'client_keys: ["devkey01", "devkey02"]')
+
+
+def test_revoke_short_client_key_removes_the_right_one(client, cfg_path):
+    cfg_path.write_text(SHORT_KEYS, encoding="utf-8")
+    version = client.get("/admin/config", headers=ADMIN).json()["version"]
+    resp = client.delete(f"/admin/client-keys/0?version={version}", headers=ADMIN)
+    assert resp.status_code == 200, resp.text
+    assert _file(cfg_path)["server"]["client_keys"] == ["devkey02"]
+
+
+def test_put_ambiguous_client_key_masks_after_removal_422(client, cfg_path):
+    cfg_path.write_text(SHORT_KEYS, encoding="utf-8")
+    body = client.get("/admin/config", headers=ADMIN).json()
+    body["config"]["server"]["client_keys"] = body["config"]["server"]["client_keys"][1:]
+    resp = _put(client, body["version"], body["config"])
+    assert resp.status_code == 422
+    assert resp.json()["error"]["type"] == "unknown_mask"
+    assert _file(cfg_path)["server"]["client_keys"] == ["devkey01", "devkey02"]
+
+
+def test_put_unchanged_short_client_keys_round_trip(client, cfg_path):
+    cfg_path.write_text(SHORT_KEYS, encoding="utf-8")
+    body = client.get("/admin/config", headers=ADMIN).json()
+    assert _put(client, body["version"], body["config"]).status_code == 200
+    assert _file(cfg_path)["server"]["client_keys"] == ["devkey01", "devkey02"]
+
+
+def test_save_does_not_close_old_clients_immediately(client):
+    old_adapter = client.app.state.OctoFlux.providers.adapter("alpha")
+    body = client.get("/admin/config", headers=ADMIN).json()
+    body["config"]["providers"]["alpha"]["models"][0]["priority"] = 5
+    assert _put(client, body["version"], body["config"]).status_code == 200
+    assert client.app.state.OctoFlux.providers.adapter("alpha") is not old_adapter
+    assert not old_adapter._client.is_closed  # in-flight requests on it may still finish
