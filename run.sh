@@ -23,5 +23,11 @@ else
     source "$SCRIPT_DIR/.venv/bin/activate"
 fi
 
+# --dev turns on auto-reload (an extra watcher process, ~20 MB); production runs without it.
+RELOAD=()
+if [[ "${1:-}" == "--dev" ]]; then
+    RELOAD=(--reload)
+fi
+
 echo "Starting OctoFlux..."
-exec "$VENV_PYTHON" -m uvicorn app.main:app --host 0.0.0.0 --reload --port 8000
+exec "$VENV_PYTHON" -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --no-access-log ${RELOAD[@]+"${RELOAD[@]}"}

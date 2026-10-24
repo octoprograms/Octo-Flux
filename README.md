@@ -302,14 +302,25 @@ The repository includes a development helper:
 
 ```bash
 chmod +x run.sh
-./run.sh
+./run.sh          # production-style: no auto-reload
+./run.sh --dev    # auto-reload while editing (adds a ~20 MB watcher process)
 ```
+
+On Windows use `run.bat` / `run.bat --dev`.
 
 The script:
 
 1. Creates `.venv` if necessary.
 2. Installs the project and development dependencies.
-3. Starts Uvicorn with live reload.
+3. Starts Uvicorn (with live reload only when `--dev` is given).
+
+### Memory
+
+OctoFlux targets small servers (512 MB RAM; the gateway itself under 80 MB). Check it with:
+
+```bash
+python scripts/benchmark.py --memory   # 10 000 mocked requests; fails if RSS >= 80 MB or it keeps growing
+```
 
 The API will be available at:
 

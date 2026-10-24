@@ -25,7 +25,11 @@ if not exist "%VENV_PYTHON%" (
 	call ".venv\Scripts\activate.bat"
 )
 
+rem --dev turns on auto-reload (an extra watcher process, ~20 MB); production runs without it.
+set "RELOAD="
+if /i "%~1"=="--dev" set "RELOAD=--reload"
+
 echo Starting OctoFlux...
-"%VENV_PYTHON%" -m uvicorn app.main:app --host 0.0.0.0 --reload --port 8000
+"%VENV_PYTHON%" -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --no-access-log %RELOAD%
 
 pause
