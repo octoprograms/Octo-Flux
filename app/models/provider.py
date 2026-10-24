@@ -103,7 +103,9 @@ class ProviderConfig(BaseModel):
     keys: list[KeyConfig] = Field(default_factory=list)
     models: list[ModelConfig] = Field(default_factory=list)
 
+    # `limits` apply to each key; `total_limits` caps all keys combined.
     limits: LimitsConfig = Field(default_factory=LimitsConfig)
+    total_limits: LimitsConfig | None = None
     retry: RetryConfig = Field(default_factory=RetryConfig)
     health: HealthConfig = Field(default_factory=HealthConfig)
     dynamic_models: DynamicModelsConfig = Field(default_factory=DynamicModelsConfig)

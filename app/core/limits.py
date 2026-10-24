@@ -9,10 +9,11 @@ upstream.
 """
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass, field
 
-from app.models.provider import LimitsConfig
+from app.models.provider import KeyConfig, LimitsConfig, ProviderConfig
 
 _WINDOWS = {
     "requests_per_second": 1.0,
@@ -82,10 +83,11 @@ class LimitState:
     counters: dict[str, _SlidingWindowCounter] = field(default_factory=dict)
     in_flight: int = 0
     concurrency_limit: int | None = None
+    cfg: LimitsConfig | None = None
 
     @classmethod
     def from_config(cls, cfg: LimitsConfig) -> "LimitState":
-        state = cls(concurrency_limit=cfg.concurrent_requests)
+        state = cls(concurrency_limit=cfg.concurrent_requests, cfg=cfg)
         for field_name, window in _WINDOWS.items():
             limit = getattr(cfg, field_name)
             if limit is not None:
@@ -131,23 +133,59 @@ class LimitState:
         }
 
 
+def effective_key_limits(provider: ProviderConfig, key: KeyConfig) -> LimitsConfig:
+    """Provider `limits` (per key) with the key's own non-None fields overriding."""
+    if key.limits is None:
+        return provider.limits
+    return LimitsConfig(**{**provider.limits.model_dump(), **key.limits.model_dump(exclude_none=True)})
+
+
+def _content_chars(content: object) -> int:
+    if isinstance(content, str):
+        return len(content)
+    if isinstance(content, list):
+        return sum(len(part.get("text") or "") if isinstance(part, dict) else len(str(part)) for part in content)
+    return 0
+
+
+def estimate_tokens(payload: dict) -> int:
+    """ceil(chars / 4) of message contents (or embeddings input) + requested output tokens."""
+    chars = sum(_content_chars(m.get("content")) for m in payload.get("messages") or [] if isinstance(m, dict))
+    chars += _content_chars(payload.get("input"))
+    max_out = payload.get("max_tokens") or payload.get("max_completion_tokens") or 0
+    return math.ceil(chars / 4) + int(max_out)
+
+
+def _sync(state: LimitState | None, cfg: LimitsConfig) -> LimitState:
+    """Return a state for cfg, keeping counters whose window still exists after a config edit."""
+    if state is not None and state.cfg == cfg:
+        return state
+    fresh = LimitState.from_config(cfg)
+    if state is not None:
+        fresh.in_flight = state.in_flight
+        for name, counter in fresh.counters.items():
+            old = state.counters.get(name)
+            if old is not None:
+                old.limit = counter.limit
+                fresh.counters[name] = old
+    return fresh
+
+
 @dataclass
 class LimitsRegistry:
     _provider_limits: dict[str, LimitState] = field(default_factory=dict)
     _key_limits: dict[tuple[str, str], LimitState] = field(default_factory=dict)
 
-    def provider(self, provider_id: str, cfg: LimitsConfig) -> LimitState:
-        if provider_id not in self._provider_limits:
-            self._provider_limits[provider_id] = LimitState.from_config(cfg)
-        return self._provider_limits[provider_id]
+    def provider(self, provider_id: str, cfg: LimitsConfig | None) -> LimitState:
+        """Combined limit for all keys of a provider (its `total_limits`)."""
+        state = _sync(self._provider_limits.get(provider_id), cfg or LimitsConfig())
+        self._provider_limits[provider_id] = state
+        return state
 
-    def key(self, provider_id: str, key_name: str, cfg: LimitsConfig | None) -> LimitState | None:
-        if cfg is None:
-            return None
-        cache_key = (provider_id, key_name)
-        if cache_key not in self._key_limits:
-            self._key_limits[cache_key] = LimitState.from_config(cfg)
-        return self._key_limits[cache_key]
+    def key(self, provider_id: str, key_name: str, cfg: LimitsConfig) -> LimitState:
+        state = _sync(self._key_limits.get((provider_id, key_name)), cfg)
+        self._key_limits[(provider_id, key_name)] = state
+        return state
 
     def snapshot(self) -> dict:
         return {

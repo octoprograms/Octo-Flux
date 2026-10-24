@@ -77,6 +77,7 @@ class OpenAICompatibleProvider:
             status_code=resp.status_code,
             json_body=data,
             latency_ms=latency_ms,
+            headers=resp.headers,
             input_tokens=int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0),
             output_tokens=int(usage.get("completion_tokens") or usage.get("output_tokens") or 0),
         )
@@ -109,6 +110,7 @@ class OpenAICompatibleProvider:
             status_code=resp.status_code,
             json_body=data,
             latency_ms=latency_ms,
+            headers=resp.headers,
             input_tokens=int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0),
         )
 

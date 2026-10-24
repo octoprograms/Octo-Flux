@@ -708,7 +708,23 @@ Unset limits are unlimited.
 
 Windows operate independently. For example, exhausting the daily request limit blocks requests even if the minute-level limit still has capacity.
 
-Limits can be configured at provider and key level.
+### Per-key limits and `total_limits`
+
+A provider's `limits` apply **to each key** of that provider (each key is usually its own free-tier account). A key's own `limits` override individual fields. To cap all keys of a provider together, use `total_limits`:
+
+```yaml
+providers:
+  groq:
+    limits: {requests_per_minute: 30, tokens_per_minute: 6000}   # per key
+    total_limits: {requests_per_day: 20000}                        # all keys combined
+    keys:
+      - {name: groq-1, value: "${GROQ_API_KEY_1}"}
+      - {name: groq-2, value: "${GROQ_API_KEY_2}", limits: {requests_per_minute: 10}}
+```
+
+Token limits are checked before sending with an estimate (`characters / 4` of the messages plus `max_tokens`); the real token counts from the upstream `usage` are recorded afterwards.
+
+OctoFlux also reads upstream `x-ratelimit-*` headers (Groq/OpenAI and OpenRouter styles). When a key reports 0 remaining requests or tokens, it is cooled down until the reported reset time (at most 24 h), before it ever returns a 429.
 
 ---
 

@@ -216,7 +216,7 @@ def test_successful_request_counts_toward_token_limits():
     respx.post("http://alpha.test/v1/chat/completions").mock(return_value=ok_response())
     _client_for(state).post("/v1/chat/completions", json={"model": "model-a", "messages": []})
 
-    assert state.limits.snapshot()["providers"]["alpha"]["tokens_per_minute"]["used"] == 8  # 5 prompt + 3 completion
+    assert state.limits.snapshot()["keys"]["alpha:k"]["tokens_per_minute"]["used"] == 8  # 5 prompt + 3 completion
 
 
 @respx.mock
@@ -230,9 +230,10 @@ def test_streaming_counts_toward_limits_and_usage(app_state: AppState):
     with client.stream("POST", "/v1/chat/completions", json={"model": "model-a", "messages": [], "stream": True}) as resp:
         b"".join(resp.iter_bytes())
 
-    alpha = app_state.limits.snapshot()["providers"]["alpha"]
-    assert alpha["requests_per_minute"]["used"] == 1
-    assert alpha["in_flight"] == 0  # released once the stream finished
+    keys = app_state.limits.snapshot()["keys"]
+    alpha = [keys[name] for name in ("alpha:alpha-key-1", "alpha:alpha-key-2") if name in keys]
+    assert sum(k["requests_per_minute"]["used"] for k in alpha) == 1
+    assert all(k["in_flight"] == 0 for k in alpha)  # released once the stream finished
     assert client.get("/admin/usage", headers=ADMIN).json()["global"]["successful_requests"] == before + 1
 
 

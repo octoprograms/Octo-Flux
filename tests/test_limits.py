@@ -76,3 +76,104 @@ def test_counter_dump_load_round_trip():
     restored.load(counter.dump())
     assert restored.current_total(now=1200.0) == 7
     assert restored.current_total(now=1000.0 + 3600 + 120) == 0
+
+
+import httpx
+import pytest
+import respx
+
+from app.core.app_state import AppState
+from app.core.retry import ClientFacingError
+from tests.conftest import make_config
+from tests.mock_provider import ok_response
+
+ONE_PROVIDER = """
+providers:
+  solo:
+    base_url: "http://solo.test/v1"
+    keys:
+      - {{name: k1, value: "v1"}}
+      - {{name: k2, value: "v2"}}
+    models: [{{id: m}}]
+    {extra}
+"""
+
+
+def _state(extra: str, tmp_path) -> AppState:
+    import os
+
+    os.environ["OctoFlux_USAGE_DB"] = str(tmp_path / "usage.db")
+    return AppState.build(make_config(ONE_PROVIDER.format(extra=extra)))
+
+
+async def _ask(state: AppState, content: str = "hi") -> str:
+    result = await state.scheduler.execute_chat_completion(
+        requested_model="m", payload={"messages": [{"role": "user", "content": content}]}, request_id="r"
+    )
+    return result.key_name
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_two_keys_double_capacity(tmp_path):
+    respx.post("http://solo.test/v1/chat/completions").mock(return_value=ok_response())
+    state = _state("limits: {requests_per_minute: 1}", tmp_path)
+    assert {await _ask(state), await _ask(state)} == {"k1", "k2"}
+    with pytest.raises(ClientFacingError) as exc:
+        await _ask(state)
+    assert exc.value.status_code == 503
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_total_limits_cap_all_keys(tmp_path):
+    respx.post("http://solo.test/v1/chat/completions").mock(return_value=ok_response())
+    state = _state("total_limits: {requests_per_minute: 1}", tmp_path)
+    await _ask(state)
+    with pytest.raises(ClientFacingError) as exc:
+        await _ask(state)
+    assert exc.value.status_code == 503
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_token_budget_skips_key(tmp_path):
+    respx.post("http://solo.test/v1/chat/completions").mock(return_value=ok_response())
+    state = _state("limits: {tokens_per_minute: 10}", tmp_path)
+    with pytest.raises(ClientFacingError) as exc:
+        await _ask(state, "x" * 100)
+    assert exc.value.status_code == 503
+    assert any("token limit" in reason for reason in exc.value.tried)
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_zero_remaining_cools_key_until_reset(tmp_path):
+    exhausted = ok_response()
+    exhausted.headers["x-ratelimit-remaining-requests"] = "0"
+    exhausted.headers["x-ratelimit-reset-requests"] = "30s"
+    respx.post("http://solo.test/v1/chat/completions").mock(side_effect=[exhausted, ok_response(), ok_response()])
+    state = _state("key_selection: priority", tmp_path)
+    assert await _ask(state) == "k1"
+    assert await _ask(state) == "k2"
+    assert state.health.key("solo", "k1").is_in_cooldown()
+
+
+def test_key_limits_override_provider_limits():
+    from app.core.limits import effective_key_limits
+
+    config = make_config(
+        ONE_PROVIDER.format(extra="limits: {requests_per_minute: 5, tokens_per_minute: 100}")
+        .replace('{name: k1, value: "v1"}', '{name: k1, value: "v1", limits: {requests_per_minute: 2}}')
+    )
+    provider = config.providers["solo"]
+    merged = effective_key_limits(provider, provider.keys[0])
+    assert (merged.requests_per_minute, merged.tokens_per_minute) == (2, 100)
+    assert effective_key_limits(provider, provider.keys[1]).requests_per_minute == 5
+
+
+def test_estimate_tokens():
+    from app.core.limits import estimate_tokens
+
+    payload = {"messages": [{"content": "a" * 10}, {"content": [{"type": "text", "text": "b" * 6}]}], "max_tokens": 50}
+    assert estimate_tokens(payload) == 4 + 50

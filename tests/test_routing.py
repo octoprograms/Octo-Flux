@@ -56,8 +56,10 @@ def test_cooldown_excludes_specific_key_but_not_other_key(app_state: AppState):
 
 
 def test_exhausted_local_rate_limit_excludes_provider(app_state):
-    limit_state = app_state.limits.provider("alpha", app_state.config.providers["alpha"].limits)
-    # No RPM configured in fixture for alpha? it is 100; force exhaustion manually.
+    from app.models.provider import LimitsConfig
+
+    app_state.config.providers["alpha"].total_limits = LimitsConfig(requests_per_minute=100)
+    limit_state = app_state.limits.provider("alpha", app_state.config.providers["alpha"].total_limits)
     for _ in range(100):
         limit_state.record_request_start()
     resolution = app_state.scheduler.router.resolve("model-a")

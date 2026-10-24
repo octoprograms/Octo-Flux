@@ -33,6 +33,21 @@ class HealthState:
     last_check_reason: str | None = None
     last_check_latency_ms: float | None = None
     last_check_model_ids: list[str] | None = None
+    remaining_requests: int | None = None
+    remaining_tokens: int | None = None
+    resets_at: float | None = None  # wall clock
+    # shortcut: largest value ever seen, not per window; reset it on each window if headroom looks off.
+    max_remaining_requests: int | None = None
+
+    def record_rate_limit(self, info) -> None:
+        """Store upstream x-ratelimit-* values; cool down until reset when a budget hits 0."""
+        self.remaining_requests = info.remaining_requests
+        self.remaining_tokens = info.remaining_tokens
+        self.resets_at = info.resets_at
+        if info.remaining_requests is not None:
+            self.max_remaining_requests = max(self.max_remaining_requests or 0, info.remaining_requests)
+        if 0 in (info.remaining_requests, info.remaining_tokens) and info.resets_at is not None:
+            self.record_cooldown(max(0.0, info.resets_at - time.time()))
 
     def record_check(
         self, ok: bool, reason: str | None, latency_ms: float, model_ids: list[str] | None = None

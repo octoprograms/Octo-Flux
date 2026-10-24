@@ -26,7 +26,8 @@ from app.core.errors import (
     parse_retry_after,
 )
 from app.core.health import HealthRegistry
-from app.core.limits import LimitsRegistry
+from app.core.limits import LimitsRegistry, effective_key_limits
+from app.core.ratelimit_headers import parse_rate_limit_headers
 from app.core.router import Candidate, Router
 from app.core.usage import UsageRegistry
 from app.models.provider import OctoFluxConfig
@@ -196,6 +197,14 @@ class Scheduler:
             self.usage.record_timeout(candidate.provider_id)
         return scope
 
+    def _record_rate_limit(self, candidate: Candidate, headers) -> None:
+        # shortcut: streamed responses carry no headers here, so streams don't update upstream remaining.
+        if headers is None:
+            return
+        info = parse_rate_limit_headers(headers, time.time())
+        if info is not None:
+            self.health.key(candidate.provider_id, candidate.key.name).record_rate_limit(info)
+
     async def execute_chat_completion(
         self, *, requested_model: str, payload: dict[str, Any], request_id: str
     ) -> ChatCompletionResult:
@@ -307,11 +316,11 @@ class Scheduler:
                 key=candidate.key.name, reason=candidate.reason,
             )
 
-            provider_limit_state = self.limits.provider(candidate.provider_id, self.config.providers[candidate.provider_id].limits)
-            key_limit_state = self.limits.key(candidate.provider_id, candidate.key.name, candidate.key.limits)
+            provider_cfg = self.config.providers[candidate.provider_id]
+            provider_limit_state = self.limits.provider(candidate.provider_id, provider_cfg.total_limits)
+            key_limit_state = self.limits.key(candidate.provider_id, candidate.key.name, effective_key_limits(provider_cfg, candidate.key))
             provider_limit_state.record_request_start()
-            if key_limit_state is not None:
-                key_limit_state.record_request_start()
+            key_limit_state.record_request_start()
 
             adapter = self.providers.adapter(candidate.provider_id)
             log_event(
@@ -322,7 +331,7 @@ class Scheduler:
             )
             result = await call(adapter, candidate)
 
-            limit_states = [s for s in (provider_limit_state, key_limit_state) if s is not None]
+            limit_states = [provider_limit_state, key_limit_state]
             if isinstance(result, UpstreamSuccess) and result.stream is not None:
                 # shortcut: streamed tokens are not counted toward token limits; parse the final usage chunk if that matters.
                 result.stream = _end_when_done(result.stream, limit_states)
@@ -334,6 +343,7 @@ class Scheduler:
             if isinstance(result, UpstreamSuccess):
                 self.health.provider(candidate.provider_id).record_success()
                 self.health.key(candidate.provider_id, candidate.key.name).record_success()
+                self._record_rate_limit(candidate, result.headers)
                 self.health.model(candidate.provider_id, candidate.model_id).record_success(promote=candidate.dynamic)
                 self.usage.record_attempt(candidate.provider_id, candidate.model_id, candidate.key.name, True, result.latency_ms)
                 self.usage.record_tokens(
@@ -370,6 +380,7 @@ class Scheduler:
 
             trace.append(AttemptTrace(candidate.provider_id, candidate.model_id, candidate.key.name, category.value, result.latency_ms))
             failure_scope = self.apply_failure(candidate, category, retry_after)
+            self._record_rate_limit(candidate, result.headers)
             if failure_scope == FailureScope.MODEL:
                 skipped_models.add((candidate.provider_id, candidate.model_id))
             elif failure_scope == FailureScope.PROVIDER:

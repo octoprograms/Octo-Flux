@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from itertools import count
 
 from app.core.health import HealthRegistry
-from app.core.limits import LimitsRegistry
+from app.core.limits import LimitsRegistry, effective_key_limits, estimate_tokens
 from app.core.usage import UsageRegistry
 from app.models.provider import KeyConfig, OctoFluxConfig, ProviderConfig
 from app.providers.base import DiscoveredModel
@@ -77,6 +77,18 @@ class Router:
         start = self._rr.next_index(provider.id, len(keys))
         return keys[start:] + keys[:start]
 
+    def _key_block_reason(self, provider: ProviderConfig, key: KeyConfig, estimate: int) -> str | None:
+        """Why this key can't take the request right now (cooldown or local limits), or None."""
+        key_health = self.health.key(provider.id, key.name)
+        if key_health.is_in_cooldown():
+            return f"key '{provider.id}:{key.name}' in cooldown for {key_health.seconds_until_available():.0f}s"
+        state = self.limits.key(provider.id, key.name, effective_key_limits(provider, key))
+        if not state.has_request_budget():
+            return f"key '{provider.id}:{key.name}' exhausted its local request rate limit"
+        if not state.has_token_budget(estimate):
+            return f"key '{provider.id}:{key.name}' exhausted its local token limit"
+        return None
+
     def _provider_model_pairs(
         self, requested_model: str, capability: str
     ) -> tuple[list[tuple[str, str]], bool, bool]:
@@ -126,7 +138,8 @@ class Router:
         )
         return pairs, model_exists, bool(pairs)
 
-    def resolve(self, requested_model: str, capability: str = "chat") -> RouteResolution:
+    def resolve(self, requested_model: str, capability: str = "chat", payload: dict | None = None) -> RouteResolution:
+        estimate = estimate_tokens(payload or {})
         pairs, model_found, capability_found = self._provider_model_pairs(requested_model, capability)
         candidates: list[Candidate] = []
         excluded: list[str] = []
@@ -158,26 +171,21 @@ class Router:
                 )
                 continue
 
-            provider_limit_state = self.limits.provider(provider_id, provider.limits)
+            provider_limit_state = self.limits.provider(provider_id, provider.total_limits)
             if not provider_limit_state.has_request_budget():
                 excluded.append(f"provider '{provider_id}' exhausted its local request rate limit")
+                continue
+            if not provider_limit_state.has_token_budget(estimate):
+                excluded.append(f"provider '{provider_id}' exhausted its local token limit")
                 continue
 
             enabled_keys = [k for k in provider.keys if k.enabled]
             ordered_keys = self._order_keys(provider, enabled_keys)
 
             for key in ordered_keys:
-                key_health = self.health.key(provider_id, key.name)
-                if key_health.is_in_cooldown():
-                    excluded.append(
-                        f"key '{provider_id}:{key.name}' in cooldown for "
-                        f"{key_health.seconds_until_available():.0f}s"
-                    )
-                    continue
-
-                key_limit_state = self.limits.key(provider_id, key.name, key.limits)
-                if key_limit_state is not None and not key_limit_state.has_request_budget():
-                    excluded.append(f"key '{provider_id}:{key.name}' exhausted its local request rate limit")
+                block = self._key_block_reason(provider, key, estimate)
+                if block is not None:
+                    excluded.append(block)
                     continue
 
                 model_cfg = next((m for m in provider.models if m.id == model_id), None)
@@ -202,11 +210,12 @@ class Router:
     async def resolve_dynamic(
         self, requested_model: str, *, payload: dict | None = None, capability: str = "chat"
     ) -> RouteResolution:
-        resolution = self.resolve(requested_model, capability)
+        resolution = self.resolve(requested_model, capability, payload)
         if requested_model != "auto":
             return resolution
 
         payload = payload or {}
+        estimate = estimate_tokens(payload)
         for provider_id, provider in sorted(self.config.enabled_providers().items(), key=lambda item: item[1].priority):
             settings = provider.dynamic_models
             if not settings.enabled or (provider_id == "openrouter" and capability == "chat"):
@@ -243,6 +252,10 @@ class Router:
                     )
                     continue
                 for key in self._order_keys(provider, keys):
+                    block = self._key_block_reason(provider, key, estimate)
+                    if block is not None:
+                        resolution.excluded.append(block)
+                        continue
                     resolution.candidates.append(
                         Candidate(
                             provider_id=provider_id,
