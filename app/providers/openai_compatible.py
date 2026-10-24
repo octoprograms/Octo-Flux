@@ -48,6 +48,13 @@ class OpenAICompatibleProvider:
         self._discovered_models: list[DiscoveredModel] = []
         self._discovery_at = 0.0
         self._discovery_failure_at = 0.0
+        self.discovered_at: float | None = None  # wall clock of the last successful discovery
+
+    def known_model_ids(self) -> set[str] | None:
+        """Ids from the latest successful discovery, or None if there is none to trust."""
+        if not self._discovery_at or not self._discovered_models:
+            return None
+        return {model.id for model in self._discovered_models}
 
     async def chat_completion(
         self, *, model: str, payload: dict[str, Any], api_key: str, request_id: str
@@ -196,6 +203,7 @@ class OpenAICompatibleProvider:
                 models = [model for model in models if model is not None]
                 self._discovered_models = models
                 self._discovery_at = time.monotonic()
+                self.discovered_at = time.time()
                 self._discovery_failure_at = 0.0
                 log_event("dynamic_model_discovery_succeeded", provider=self.config.id, discovered=len(models))
             except Exception as exc:

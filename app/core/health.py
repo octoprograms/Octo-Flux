@@ -11,6 +11,8 @@ import time
 from dataclasses import dataclass, field
 from enum import Enum
 
+from app.core.model_stats import ModelStatsRegistry
+
 
 class HealthStatus(str, Enum):
     HEALTHY = "healthy"
@@ -26,7 +28,6 @@ class HealthState:
     cooldown_until: float = 0.0
     last_failure_reason: str | None = None
     last_success_at: float | None = None
-    promotion_until: float = 0.0
     total_failures: int = 0
     last_check_at: float | None = None
     last_check_ok: bool | None = None
@@ -71,12 +72,10 @@ class HealthState:
         immediately."""
         self.cooldown_until = max(self.cooldown_until, time.monotonic() + cooldown_seconds)
 
-    def record_success(self, *, promote: bool = False, promotion_seconds: float = 300.0) -> None:
+    def record_success(self) -> None:
         self.consecutive_failures = 0
         self.cooldown_until = 0.0
         self.last_success_at = time.monotonic()
-        if promote:
-            self.promotion_until = self.last_success_at + promotion_seconds
 
     def is_in_cooldown(self) -> bool:
         return time.monotonic() < self.cooldown_until
@@ -93,8 +92,6 @@ class HealthState:
     def seconds_until_available(self) -> float:
         return max(0.0, self.cooldown_until - time.monotonic())
 
-    def is_promoted(self) -> bool:
-        return time.monotonic() < self.promotion_until
 
 
 @dataclass
@@ -104,6 +101,17 @@ class HealthRegistry:
     _provider_health: dict[str, HealthState] = field(default_factory=dict)
     _key_health: dict[tuple[str, str], HealthState] = field(default_factory=dict)
     _model_health: dict[tuple[str, str], HealthState] = field(default_factory=dict)
+    model_stats: ModelStatsRegistry = field(default_factory=ModelStatsRegistry)
+
+    def drop_idle_models(self, keep: set[tuple[str, str]]) -> int:
+        """Forget health records of discovered models that are idle (not configured, no cooldown, no stats)."""
+        idle = [
+            k for k, h in self._model_health.items()
+            if k not in keep and not h.is_in_cooldown() and self.model_stats.peek(*k) is None
+        ]
+        for k in idle:
+            del self._model_health[k]
+        return len(idle)
 
     def provider(self, provider_id: str) -> HealthState:
         return self._provider_health.setdefault(provider_id, HealthState())
@@ -169,7 +177,6 @@ class HealthRegistry:
                     "seconds_until_available": h.seconds_until_available(),
                     "last_failure_reason": h.last_failure_reason,
                     "last_success_at": h.last_success_at,
-                    "promoted": h.is_promoted(),
                 }
                 for (pid, mid), h in self._model_health.items()
             },

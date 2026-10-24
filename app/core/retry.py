@@ -344,7 +344,8 @@ class Scheduler:
                 self.health.provider(candidate.provider_id).record_success()
                 self.health.key(candidate.provider_id, candidate.key.name).record_success()
                 self._record_rate_limit(candidate, result.headers)
-                self.health.model(candidate.provider_id, candidate.model_id).record_success(promote=candidate.dynamic)
+                self.health.model(candidate.provider_id, candidate.model_id).record_success()
+                self.health.model_stats.get(candidate.provider_id, candidate.model_id).record(True, result.latency_ms, time.time())
                 self.usage.record_attempt(candidate.provider_id, candidate.model_id, candidate.key.name, True, result.latency_ms)
                 self.usage.record_tokens(
                     candidate.provider_id, candidate.model_id, candidate.key.name,
@@ -370,6 +371,7 @@ class Scheduler:
             # Failure path
             assert isinstance(result, UpstreamFailure)
             self.usage.record_attempt(candidate.provider_id, candidate.model_id, candidate.key.name, False, result.latency_ms)
+            self.health.model_stats.get(candidate.provider_id, candidate.model_id).record(False, result.latency_ms, time.time())
 
             if result.status_code is None:
                 category = classify_exception(result.exception) if result.exception else ErrorCategory.UNKNOWN

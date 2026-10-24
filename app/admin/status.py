@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 
 from app.api.deps import get_state, require_admin_auth
@@ -154,6 +156,47 @@ async def metrics(state: AppState = Depends(get_state)) -> dict:
         "usage": state.usage.snapshot(),
         "health": state.health.snapshot(),
         "limits": state.limits.snapshot(),
+    }
+
+
+@router.get("/admin/free-models", dependencies=[Depends(require_admin_auth)])
+async def admin_free_models(provider: str = "openrouter", state: AppState = Depends(get_state)) -> dict:
+    cfg = state.config.providers.get(provider)
+    if cfg is None:
+        raise HTTPException(status_code=404, detail=f"Unknown provider '{provider}'.")
+    router = state.scheduler.router
+    adapter = state.providers.adapter(provider)
+    keys = [k for k in cfg.keys if k.enabled]
+    discovered = await adapter.discover_models(api_key=keys[0].value) if keys and cfg.dynamic_models.enabled else []
+    ranked, rejected = router.rank_free_models(cfg, discovered, {})
+    ranks = {m.id: (i + 1, s) for i, (m, _, s) in enumerate(ranked)}
+    now = time.time()
+    models, seen = [], set()
+    for position, model in enumerate(discovered):
+        if model.id in seen:
+            continue
+        seen.add(model.id)
+        stats = state.health.model_stats.peek(provider, model.id)
+        rank, score_value = ranks.get(model.id, (None, None))
+        models.append({
+            "id": model.id,
+            "rank": rank,
+            "score": score_value,
+            "position": position,
+            "context_length": model.context_length,
+            "tools": "tools" in model.supported_parameters or "tool_choice" in model.supported_parameters,
+            "successes_24h": stats.successes_24h(now) if stats else 0,
+            "failures_24h": stats.failures_24h(now) if stats else 0,
+            "p50_ms": stats.p50_ms(now) if stats else None,
+            "pinned": model.id in cfg.dynamic_models.pinned,
+            "blocked": model.id in cfg.dynamic_models.blocked,
+            "rejected_reason": rejected.get(model.id),
+        })
+    return {
+        "provider": provider,
+        "discovered_at": getattr(adapter, "discovered_at", None),
+        "models": models,
+        "stale": [m.id for m in cfg.models if router.is_stale(cfg, m)],
     }
 
 

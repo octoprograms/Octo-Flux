@@ -11,13 +11,15 @@ app.core.retry's job.
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass, field
 from itertools import count
 
 from app.core.health import HealthRegistry
 from app.core.limits import LimitsRegistry, effective_key_limits, estimate_tokens
+from app.core.model_stats import ModelStats, score
 from app.core.usage import UsageRegistry
-from app.models.provider import DynamicModelsConfig, KeyConfig, LimitsConfig, OctoFluxConfig, ProviderConfig
+from app.models.provider import DynamicModelsConfig, KeyConfig, LimitsConfig, ModelConfig, OctoFluxConfig, ProviderConfig
 from app.providers.base import DiscoveredModel
 from app.providers.registry import ProviderRegistry
 
@@ -65,6 +67,46 @@ class Router:
         self.usage = usage
         self.providers = providers
         self._rr = _RoundRobinCursor()
+        self._last_evict = time.time()
+
+    def is_stale(self, provider: ProviderConfig, model: ModelConfig) -> bool:
+        """A configured ':free' chat model missing from the latest successful discovery."""
+        if not provider.dynamic_models.enabled or not model.id.endswith(":free") or "chat" not in model.capabilities:
+            return False
+        known = getattr(self.providers.adapter(provider.id), "known_model_ids", lambda: None)()
+        return known is not None and model.id not in known
+
+    def rank_free_models(
+        self, provider: ProviderConfig, discovered: list[DiscoveredModel], payload: dict
+    ) -> tuple[list[tuple[DiscoveredModel, int, float]], dict[str, str]]:
+        """Accepted (model, position, score) best first (pins, then score, then upstream order) and rejection reasons."""
+        now = time.time()
+        settings = provider.dynamic_models
+        accepted: list[tuple[DiscoveredModel, int, float]] = []
+        seen: set[str] = set()
+        rejected: dict[str, str] = {}
+        for position, model in enumerate(discovered):
+            if model.id in seen:
+                continue
+            seen.add(model.id)
+            reason = _model_suits_request(model, payload, settings)
+            if reason is not None:
+                rejected[model.id] = reason
+                continue
+            stats = self.health.model_stats.peek(provider.id, model.id) or ModelStats()
+            accepted.append((model, position, score(position, stats, now)))
+        pins = {mid: i for i, mid in enumerate(settings.pinned)}
+        accepted.sort(key=lambda t: (pins.get(t[0].id, len(pins)), t[2], t[1]))
+        return accepted, rejected
+
+    def _evict_idle(self) -> None:
+        now = time.time()
+        if now - self._last_evict < 3600:
+            return
+        self._last_evict = now
+        self.health.model_stats.evict_idle(now)
+        configured = {(pid, m.id) for pid, p in self.config.providers.items() for m in p.models}
+        self.health.drop_idle_models(configured)
 
     def _headroom(self, provider_id: str, key: KeyConfig, cfg: LimitsConfig) -> float:
         """Smallest remaining fraction across local windows and the upstream budget; 1.0 when unknown."""
@@ -167,6 +209,10 @@ class Router:
 
         for provider_id, model_id in pairs:
             provider = self.config.providers[provider_id]
+            model_cfg = next((m for m in provider.models if m.id == model_id), None)
+            if model_cfg is not None and self.is_stale(provider, model_cfg):
+                excluded.append(f"model '{provider_id}:{model_id}' no longer listed as free upstream")
+                continue
 
             model_health = self.health.model(provider_id, model_id)
             if model_health.is_in_cooldown():
@@ -223,30 +269,31 @@ class Router:
     async def resolve_dynamic(
         self, requested_model: str, *, payload: dict | None = None, capability: str = "chat"
     ) -> RouteResolution:
-        resolution = self.resolve(requested_model, capability, payload)
         if requested_model != "auto":
-            return resolution
+            return self.resolve(requested_model, capability, payload)
 
         payload = payload or {}
         estimate = estimate_tokens(payload)
-        for provider_id, provider in sorted(self.config.enabled_providers().items(), key=lambda item: item[1].priority):
+        providers = sorted(self.config.enabled_providers().items(), key=lambda item: item[1].priority)
+        # Discover first so the stale check in resolve() sees the fresh list.
+        discovered: dict[str, list[DiscoveredModel]] = {}
+        for provider_id, provider in providers:
+            keys = [key for key in provider.keys if key.enabled]
+            if keys and provider.dynamic_models.enabled:
+                discovered[provider_id] = await self.providers.adapter(provider_id).discover_models(api_key=keys[0].value)
+        self._evict_idle()
+        resolution = self.resolve(requested_model, capability, payload)
+
+        for provider_id, provider in providers:
             keys = [key for key in provider.keys if key.enabled]
             if not keys:
                 continue
             extra: list[tuple[str, int, str]] = []  # (model id, model priority, reason)
-            settings = provider.dynamic_models
-            if settings.enabled:
-                discovered = await self.providers.adapter(provider_id).discover_models(api_key=keys[0].value)
+            if provider_id in discovered:
                 existing = {c.model_id for c in resolution.candidates if c.provider_id == provider_id}
-                accepted: dict[str, int] = {}
-                for position, model in enumerate(discovered):
-                    if model.id not in existing and model.id not in accepted and _model_suits_request(model, payload, settings) is None:
-                        accepted[model.id] = position
-                ranked = sorted(
-                    accepted,
-                    key=lambda mid: (not self.health.model(provider_id, mid).is_promoted(), accepted[mid]),
-                )[: settings.max_candidates]
-                extra += [(mid, 100000 + rank, "dynamically discovered OpenAI-compatible model") for rank, mid in enumerate(ranked)]
+                ranked, _ = self.rank_free_models(provider, discovered[provider_id], payload)
+                ranked = [m for m, _, _ in ranked if m.id not in existing][: provider.dynamic_models.max_candidates]
+                extra += [(m.id, 100000 + rank, "dynamically discovered OpenAI-compatible model") for rank, m in enumerate(ranked)]
             if provider_id == "openrouter" and capability == "chat":
                 extra.append(("openrouter/free", 200000, "openrouter free router fallback"))
 
