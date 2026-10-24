@@ -51,6 +51,9 @@ class DynamicModelsConfig(BaseModel):
     max_candidates: int = Field(default=10, ge=1, le=100)
     refresh_interval_seconds: int = Field(default=900, ge=60)
     stale_after_seconds: int = Field(default=3600, ge=60)
+    pinned: list[str] = Field(default_factory=list)
+    blocked: list[str] = Field(default_factory=list)
+    min_context: int = Field(default=32768, ge=0)
 
 
 class KeyConfig(BaseModel):

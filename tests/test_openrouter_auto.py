@@ -53,6 +53,26 @@ def openrouter_config(*, keys: int = 2, with_groq: bool = False) -> OctoFluxConf
     return OctoFluxConfig.model_validate(resolved)
 
 
+def free_model(model_id: str, context: int = 131072, tools: bool = True) -> dict:
+    return {
+        "id": model_id,
+        "context_length": context,
+        "pricing": {"prompt": "0", "completion": "0"},
+        "architecture": {"output_modalities": ["text"]},
+        "supported_parameters": ["tools", "tool_choice"] if tools else ["temperature"],
+    }
+
+
+def mock_discovery(*models: dict):
+    return respx.get("http://openrouter.test/v1/models?dynamic=1").mock(
+        return_value=httpx.Response(200, json={"data": list(models)})
+    )
+
+
+def sent_models() -> list[str]:
+    return [json.loads(call.request.content)["model"] for call in respx.calls if call.request.method == "POST"]
+
+
 def client_for(state: AppState) -> TestClient:
     from app.main import create_app
 
@@ -61,22 +81,101 @@ def client_for(state: AppState) -> TestClient:
     return TestClient(app)
 
 
+def _only_free_router_works(request: httpx.Request) -> httpx.Response:
+    if json.loads(request.content)["model"] == "openrouter/free":
+        return httpx.Response(200, json={"model": "selected/model:free", "choices": []})
+    return httpx.Response(404, text="model not found")
+
+
 @pytest.mark.asyncio
 @respx.mock
-async def test_auto_openrouter_sends_free_router_and_skips_discovery():
-    discovery = respx.get("http://openrouter.test/v1/models?dynamic=1")
-    completion = respx.post("http://openrouter.test/v1/chat/completions").mock(
-        return_value=httpx.Response(200, json={"model": "selected/model:free", "choices": []})
-    )
+async def test_auto_tries_discovered_before_openrouter_free():
+    mock_discovery(free_model("big/model:free"))
+    respx.post("http://openrouter.test/v1/chat/completions").mock(side_effect=_only_free_router_works)
     state = AppState.build(openrouter_config(keys=1))
 
     result = await state.scheduler.execute_chat_completion(
         requested_model="auto", payload={"messages": []}, request_id="auto-openrouter"
     )
 
-    assert json.loads(completion.calls[0].request.content)["model"] == "openrouter/free"
+    assert sent_models() == ["configured-free-model", "big/model:free", "openrouter/free"]
     assert result.model_id == "openrouter/free"
-    assert not discovery.called
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_filters_drop_non_chat_and_short_context():
+    mock_discovery(
+        free_model("acme/content-safety:free"),
+        free_model("acme/text-embedding:free"),
+        free_model("acme/llama-guard:free"),
+        free_model("acme/tiny:free", context=16384),
+        free_model("acme/good:free"),
+    )
+    state = AppState.build(openrouter_config(keys=1))
+
+    resolution = await state.scheduler.router.resolve_dynamic("auto", payload={"messages": []})
+
+    models = [c.model_id for c in resolution.candidates]
+    assert models == ["configured-free-model", "acme/good:free", "openrouter/free"]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_tools_request_drops_models_without_tools():
+    mock_discovery(free_model("acme/no-tools:free", tools=False), free_model("acme/tools:free"))
+    state = AppState.build(openrouter_config(keys=1))
+
+    resolution = await state.scheduler.router.resolve_dynamic(
+        "auto", payload={"messages": [], "tools": [{"type": "function", "function": {"name": "f"}}]}
+    )
+
+    assert "acme/no-tools:free" not in [c.model_id for c in resolution.candidates]
+    assert "acme/tools:free" in [c.model_id for c in resolution.candidates]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_blocked_model_never_used():
+    mock_discovery(free_model("acme/bad:free"), free_model("acme/good:free"))
+    config = openrouter_config(keys=1)
+    config.providers["openrouter"].dynamic_models.blocked = ["acme/bad:free"]
+    state = AppState.build(config)
+
+    resolution = await state.scheduler.router.resolve_dynamic("auto", payload={"messages": []})
+
+    assert "acme/bad:free" not in [c.model_id for c in resolution.candidates]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_discovery_down_auto_still_routes():
+    respx.get("http://openrouter.test/v1/models?dynamic=1").mock(return_value=httpx.Response(500))
+    respx.post("http://openrouter.test/v1/chat/completions").mock(
+        return_value=httpx.Response(200, json={"choices": []})
+    )
+    state = AppState.build(openrouter_config(keys=1))
+
+    result = await state.scheduler.execute_chat_completion(
+        requested_model="auto", payload={"messages": []}, request_id="discovery-down"
+    )
+
+    assert result.model_id == "configured-free-model"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_free_router_last_resort_when_discovery_down():
+    respx.get("http://openrouter.test/v1/models?dynamic=1").mock(return_value=httpx.Response(500))
+    respx.post("http://openrouter.test/v1/chat/completions").mock(side_effect=_only_free_router_works)
+    state = AppState.build(openrouter_config(keys=1))
+
+    result = await state.scheduler.execute_chat_completion(
+        requested_model="auto", payload={"messages": []}, request_id="discovery-down-2"
+    )
+
+    assert sent_models() == ["configured-free-model", "openrouter/free"]
+    assert result.model_id == "openrouter/free"
 
 
 @pytest.mark.asyncio
@@ -145,9 +244,14 @@ async def test_auto_nvidia_keeps_configured_model_behavior():
 @respx.mock
 def test_streaming_auto_openrouter_uses_free_router():
     stream_body = b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: [DONE]\n\n'
-    respx.post("http://openrouter.test/v1/chat/completions").mock(
-        return_value=httpx.Response(200, content=stream_body, headers={"content-type": "text/event-stream"})
-    )
+    mock_discovery(free_model("big/model:free"))
+
+    def completion(request: httpx.Request) -> httpx.Response:
+        if json.loads(request.content)["model"] == "openrouter/free":
+            return httpx.Response(200, content=stream_body, headers={"content-type": "text/event-stream"})
+        return httpx.Response(404, text="model not found")
+
+    respx.post("http://openrouter.test/v1/chat/completions").mock(side_effect=completion)
     client = client_for(AppState.build(openrouter_config(keys=1)))
 
     with client.stream(
@@ -157,8 +261,7 @@ def test_streaming_auto_openrouter_uses_free_router():
         assert response.status_code == 200
         assert b"hi" in b"".join(response.iter_bytes())
 
-    request = respx.calls.last.request
-    assert json.loads(request.content)["model"] == "openrouter/free"
+    assert sent_models() == ["configured-free-model", "big/model:free", "openrouter/free"]
 
 
 @pytest.mark.asyncio
@@ -219,7 +322,7 @@ async def test_openrouter_free_unavailable_falls_back_to_next_provider():
 
     assert result.provider_id == "groq"
     assert groq.call_count == 1
-    assert respx.calls.call_count == 2
+    assert sent_models() == ["configured-free-model", "openrouter/free", "groq-model"]
 
 
 def test_models_endpoint_remains_backward_compatible():
@@ -251,4 +354,4 @@ async def test_logs_distinguish_requested_and_upstream_models(monkeypatch):
 
     routing = next(fields for event, fields in events if event == "routing_decision")
     assert routing["requested_model"] == "auto"
-    assert routing["upstream_model"] == "openrouter/free"
+    assert routing["upstream_model"] == "configured-free-model"

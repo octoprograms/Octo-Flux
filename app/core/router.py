@@ -10,13 +10,14 @@ app.core.retry's job.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from itertools import count
 
 from app.core.health import HealthRegistry
 from app.core.limits import LimitsRegistry, effective_key_limits, estimate_tokens
 from app.core.usage import UsageRegistry
-from app.models.provider import KeyConfig, LimitsConfig, OctoFluxConfig, ProviderConfig
+from app.models.provider import DynamicModelsConfig, KeyConfig, LimitsConfig, OctoFluxConfig, ProviderConfig
 from app.providers.base import DiscoveredModel
 from app.providers.registry import ProviderRegistry
 
@@ -114,10 +115,6 @@ class Router:
         if requested_model == "auto":
             pairs = []
             for pid, provider in sorted(enabled.items(), key=lambda kv: kv[1].priority):
-                if pid == "openrouter" and capability == "chat":
-                    if any(m.enabled and capability in m.capabilities for m in provider.models):
-                        pairs.append((pid, "openrouter/free"))
-                    continue
                 pairs.extend(
                     (pid, model.id)
                     for model in sorted(provider.models, key=lambda m: m.priority)
@@ -233,37 +230,31 @@ class Router:
         payload = payload or {}
         estimate = estimate_tokens(payload)
         for provider_id, provider in sorted(self.config.enabled_providers().items(), key=lambda item: item[1].priority):
-            settings = provider.dynamic_models
-            if not settings.enabled or (provider_id == "openrouter" and capability == "chat"):
-                continue
-            adapter = self.providers.adapter(provider_id)
             keys = [key for key in provider.keys if key.enabled]
             if not keys:
                 continue
-            discovered = await adapter.discover_models(api_key=keys[0].value)
-            accepted = [model for model in discovered if _model_suits_request(model, payload)]
-            unique_models: dict[str, DiscoveredModel] = {}
-            for model in accepted:
-                unique_models.setdefault(model.id, model)
-            accepted = list(unique_models.values())
-            existing_models = {
-                candidate.model_id
-                for candidate in resolution.candidates
-                if candidate.provider_id == provider_id
-            }
-            accepted = [model for model in accepted if model.id not in existing_models]
-            accepted.sort(
-                key=lambda model: (
-                    not self.health.model(provider_id, model.id).is_promoted(),
-                    discovered.index(model),
-                )
-            )
-            accepted = accepted[: settings.max_candidates]
-            for rank, model in enumerate(accepted):
-                model_health = self.health.model(provider_id, model.id)
+            extra: list[tuple[str, int, str]] = []  # (model id, model priority, reason)
+            settings = provider.dynamic_models
+            if settings.enabled:
+                discovered = await self.providers.adapter(provider_id).discover_models(api_key=keys[0].value)
+                existing = {c.model_id for c in resolution.candidates if c.provider_id == provider_id}
+                accepted: dict[str, int] = {}
+                for position, model in enumerate(discovered):
+                    if model.id not in existing and model.id not in accepted and _model_suits_request(model, payload, settings) is None:
+                        accepted[model.id] = position
+                ranked = sorted(
+                    accepted,
+                    key=lambda mid: (not self.health.model(provider_id, mid).is_promoted(), accepted[mid]),
+                )[: settings.max_candidates]
+                extra += [(mid, 100000 + rank, "dynamically discovered OpenAI-compatible model") for rank, mid in enumerate(ranked)]
+            if provider_id == "openrouter" and capability == "chat":
+                extra.append(("openrouter/free", 200000, "openrouter free router fallback"))
+
+            for model_id, model_priority, reason in extra:
+                model_health = self.health.model(provider_id, model_id)
                 if model_health.is_in_cooldown():
                     resolution.excluded.append(
-                        f"dynamic model '{provider_id}:{model.id}' in cooldown for "
+                        f"dynamic model '{provider_id}:{model_id}' in cooldown for "
                         f"{model_health.seconds_until_available():.0f}s"
                     )
                     continue
@@ -275,31 +266,43 @@ class Router:
                     resolution.candidates.append(
                         Candidate(
                             provider_id=provider_id,
-                            model_id=model.id,
+                            model_id=model_id,
                             key=key,
                             provider_priority=provider.priority,
-                            model_priority=100000 + rank,
-                            reason="dynamically discovered OpenAI-compatible model",
+                            model_priority=model_priority,
+                            reason=reason,
                             dynamic=True,
                         )
                     )
+        # Group discovered/fallback candidates with their provider: static, discovered, free router.
+        resolution.candidates.sort(key=lambda c: (c.provider_priority, c.model_priority))
         return resolution
 
 
-def _model_suits_request(model: DiscoveredModel, payload: dict) -> bool:
+_NON_CHAT_RE = re.compile(r"safety|guard|embed|moderation|rerank", re.I)
+
+
+def _model_suits_request(model: DiscoveredModel, payload: dict, settings: DynamicModelsConfig) -> str | None:
+    """Why a discovered model can't serve this request, or None when it can."""
+    if model.id in settings.blocked:
+        return "blocked"
     if model.deprecated:
-        return False
+        return "deprecated"
     if model.prompt_price is not None and model.completion_price is not None:
         if model.prompt_price != 0 or model.completion_price != 0:
-            return False
+            return "not free"
     if model.output_modalities and "text" not in model.output_modalities:
-        return False
+        return "no text output"
+    if _NON_CHAT_RE.search(model.id):
+        return "not a chat model"
+    if model.context_length is not None and model.context_length < settings.min_context:
+        return f"context {model.context_length} < {settings.min_context}"
     requested_tokens = payload.get("max_tokens") or payload.get("max_completion_tokens")
     if requested_tokens is not None and model.context_length is not None:
         messages = payload.get("messages") or []
         if model.context_length < int(requested_tokens) + len(messages) * 4:
-            return False
+            return "context too small for this request"
     if payload.get("tools") and model.supported_parameters:
         if "tools" not in model.supported_parameters and "tool_choice" not in model.supported_parameters:
-            return False
-    return True
+            return "no tool support"
+    return None
