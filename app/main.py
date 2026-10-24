@@ -3,7 +3,9 @@ from __future__ import annotations
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exception_handlers import http_exception_handler
+from fastapi.responses import JSONResponse
 
 from app.admin import status as admin_status
 from app.admin import ui as admin_ui
@@ -35,6 +37,14 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     app = FastAPI(title="OctoFlux", version="0.1.0", lifespan=lifespan)
+
+    @app.exception_handler(HTTPException)
+    async def _openai_shaped_errors(request: Request, exc: HTTPException):
+        # Auth and admin errors carry {"error": {...}} as detail; return it unwrapped.
+        if isinstance(exc.detail, dict) and "error" in exc.detail:
+            return JSONResponse(exc.detail, status_code=exc.status_code, headers=exc.headers)
+        return await http_exception_handler(request, exc)
+
     app.include_router(admin_ui.router)
     app.include_router(models.router)
     app.include_router(chat.router)

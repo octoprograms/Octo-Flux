@@ -6,6 +6,7 @@ import respx
 from fastapi.testclient import TestClient
 
 from app.core.app_state import AppState
+from tests.conftest import ADMIN
 from tests.mock_provider import error_response, ok_response
 
 
@@ -59,7 +60,7 @@ def test_aliases_endpoint_exposes_ordered_targets(app_state: AppState):
 
 def test_health_endpoint(app_state: AppState):
     client = _client_for(app_state)
-    resp = client.get("/health")
+    resp = client.get("/admin/health", headers=ADMIN)
     assert resp.status_code == 200
     assert resp.json()["status"] == "ok"
     assert resp.json()["providers"]["alpha"]["keys"]["alpha-key-1"]["status"] == "unknown"
@@ -72,7 +73,7 @@ def test_admin_can_test_one_provider_key(app_state: AppState):
     )
     client = _client_for(app_state)
 
-    resp = client.post("/admin/providers/alpha/keys/alpha-key-1/test")
+    resp = client.post("/admin/providers/alpha/keys/alpha-key-1/test", headers=ADMIN)
 
     assert resp.status_code == 200
     assert resp.json()["status"] == "working"
@@ -89,8 +90,8 @@ def test_admin_status_reports_latest_model_availability(app_state: AppState):
     )
     client = _client_for(app_state)
 
-    client.post("/admin/providers/alpha/keys/alpha-key-1/test")
-    models = client.get("/admin/status").json()["providers"]["alpha"]["models"]
+    client.post("/admin/providers/alpha/keys/alpha-key-1/test", headers=ADMIN)
+    models = client.get("/admin/status", headers=ADMIN).json()["providers"]["alpha"]["models"]
 
     assert models == [{"id": "model-a", "enabled": True, "priority": 10, "available": True}]
 
@@ -100,7 +101,7 @@ def test_admin_provider_key_test_reports_upstream_failure(app_state: AppState):
     respx.get("http://alpha.test/v1/models").mock(return_value=httpx.Response(401, text="invalid key"))
     client = _client_for(app_state)
 
-    resp = client.post("/admin/providers/alpha/keys/alpha-key-1/test")
+    resp = client.post("/admin/providers/alpha/keys/alpha-key-1/test", headers=ADMIN)
 
     assert resp.status_code == 200
     assert resp.json()["status"] == "unhealthy"
@@ -131,7 +132,7 @@ def test_admin_provider_key_test_validates_target_and_auth(two_provider_config):
     state = AppState.build(two_provider_config)
     client = _client_for(state)
 
-    auth = {"Authorization": "Bearer secret123"}
+    auth = ADMIN
     assert client.post("/admin/providers/missing/keys/key/test", headers=auth).status_code == 404
     assert client.post("/admin/providers/alpha/keys/missing/test", headers=auth).status_code == 404
     assert client.post("/admin/providers/alpha/keys/alpha-key-1/test").status_code == 401
@@ -161,7 +162,9 @@ def test_auth_required_when_configured(two_provider_config):
     assert resp2.status_code == 401
 
     resp3 = client.get("/admin/status", headers={"Authorization": "Bearer secret123"})
-    assert resp3.status_code == 200
+    assert resp3.status_code == 401  # client keys no longer open /admin
+
+    assert client.get("/admin/status", headers=ADMIN).status_code == 200
 
 
 @respx.mock
@@ -187,11 +190,11 @@ def test_admin_usage_reflects_requests(app_state: AppState):
     respx.post("http://alpha.test/v1/chat/completions").mock(return_value=ok_response())
     client = _client_for(app_state)
     client.post("/v1/chat/completions", json={"model": "model-a", "messages": []})
-    resp = client.get("/admin/status")
+    resp = client.get("/admin/status", headers=ADMIN)
     # require_auth is False in fixture config
     assert resp.status_code == 200
 
-    usage_resp = client.get("/admin/usage")
+    usage_resp = client.get("/admin/usage", headers=ADMIN)
     assert usage_resp.json()["global"]["successful_requests"] >= 1
 
 
@@ -223,14 +226,14 @@ def test_streaming_counts_toward_limits_and_usage(app_state: AppState):
         return_value=httpx.Response(200, content=sse_chunk, headers={"content-type": "text/event-stream"})
     )
     client = _client_for(app_state)
-    before = client.get("/admin/usage").json()["global"]["successful_requests"]
+    before = client.get("/admin/usage", headers=ADMIN).json()["global"]["successful_requests"]
     with client.stream("POST", "/v1/chat/completions", json={"model": "model-a", "messages": [], "stream": True}) as resp:
         b"".join(resp.iter_bytes())
 
     alpha = app_state.limits.snapshot()["providers"]["alpha"]
     assert alpha["requests_per_minute"]["used"] == 1
     assert alpha["in_flight"] == 0  # released once the stream finished
-    assert client.get("/admin/usage").json()["global"]["successful_requests"] == before + 1
+    assert client.get("/admin/usage", headers=ADMIN).json()["global"]["successful_requests"] == before + 1
 
 
 @respx.mock

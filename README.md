@@ -796,7 +796,8 @@ Checks run concurrently using the shortest configured provider interval.
 Health information is available through:
 
 ```http
-GET /health
+GET /health          # public, returns only {"status": "ok"}
+GET /admin/health    # admin key: per-provider / per-key check results
 GET /admin/status
 ```
 
@@ -827,7 +828,17 @@ Open:
 http://localhost:8000/admin
 ```
 
-The dashboard uses an existing OctoFlux client key. There is no separate admin database or password system.
+## Admin access
+
+The dashboard and every `/admin/*` route (plus `/metrics`) require an **admin key** from `server.admin_keys`:
+
+```yaml
+server:
+  admin_keys:
+    - {name: owner, value: "${OctoFlux_ADMIN_KEY}"}
+```
+
+**Breaking change:** client keys (`server.client_keys`) no longer open `/admin`; they only work on `/v1/*`. `require_auth: false` disables client auth only, never admin auth. With no admin keys configured, admin routes return `403 admin_disabled`.
 
 The key is stored in browser `sessionStorage` and sent as:
 
@@ -863,7 +874,7 @@ Reloading preserves runtime health, cooldown, and usage state for providers and 
 
 If the new configuration is invalid, OctoFlux keeps the currently active configuration instead of switching to a broken state.
 
-> **Security:** the client key grants access to both the gateway and admin API. Deploy the admin interface behind HTTPS and restrict access to trusted operators.
+> **Security:** admin keys can change the whole configuration. Deploy the admin interface behind HTTPS and restrict access to trusted operators.
 
 ---
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from app.api.deps import get_state, require_client_auth
+from app.api.deps import get_state, require_admin_auth
 from app.core.app_state import AppState
 from app.core.config import ConfigError, load_config_from_env
 from app.core.provider_checks import mask_api_key
@@ -28,7 +28,12 @@ def _model_availability(provider_id: str, model_id: str, keys: list) -> bool | N
 
 
 @router.get("/health")
-async def health(state: AppState = Depends(get_state)) -> dict:
+async def health() -> dict:
+    return {"status": "ok"}
+
+
+@router.get("/admin/health", dependencies=[Depends(require_admin_auth)])
+async def admin_health(state: AppState = Depends(get_state)) -> dict:
     providers = {}
     for pid, provider in state.config.enabled_providers().items():
         keys = {}
@@ -50,7 +55,7 @@ async def health(state: AppState = Depends(get_state)) -> dict:
     return {"status": "ok", "providers_configured": len(providers), "providers": providers}
 
 
-@router.get("/admin/status", dependencies=[Depends(require_client_auth)])
+@router.get("/admin/status", dependencies=[Depends(require_admin_auth)])
 async def admin_status(state: AppState = Depends(get_state)) -> dict:
     providers_status = {}
     for pid, provider in state.config.providers.items():
@@ -89,7 +94,7 @@ async def admin_status(state: AppState = Depends(get_state)) -> dict:
     return {"providers": providers_status}
 
 
-@router.get("/admin/providers", dependencies=[Depends(require_client_auth)])
+@router.get("/admin/providers", dependencies=[Depends(require_admin_auth)])
 async def admin_providers(state: AppState = Depends(get_state)) -> dict:
     # Never include key values — only names and non-secret shape.
     return {
@@ -107,12 +112,12 @@ async def admin_providers(state: AppState = Depends(get_state)) -> dict:
     }
 
 
-@router.get("/admin/usage", dependencies=[Depends(require_client_auth)])
+@router.get("/admin/usage", dependencies=[Depends(require_admin_auth)])
 async def admin_usage(state: AppState = Depends(get_state)) -> dict:
     return state.usage.snapshot()
 
 
-@router.post("/admin/providers/{provider_id}/keys/{key_name}/test", dependencies=[Depends(require_client_auth)])
+@router.post("/admin/providers/{provider_id}/keys/{key_name}/test", dependencies=[Depends(require_admin_auth)])
 async def test_provider_key(provider_id: str, key_name: str, state: AppState = Depends(get_state)) -> dict:
     provider = state.config.providers.get(provider_id)
     if provider is None:
@@ -143,7 +148,7 @@ async def test_provider_key(provider_id: str, key_name: str, state: AppState = D
     }
 
 
-@router.get("/metrics", dependencies=[Depends(require_client_auth)])
+@router.get("/metrics", dependencies=[Depends(require_admin_auth)])
 async def metrics(state: AppState = Depends(get_state)) -> dict:
     return {
         "usage": state.usage.snapshot(),
@@ -152,7 +157,7 @@ async def metrics(state: AppState = Depends(get_state)) -> dict:
     }
 
 
-@router.post("/admin/reload", dependencies=[Depends(require_client_auth)])
+@router.post("/admin/reload", dependencies=[Depends(require_admin_auth)])
 async def admin_reload(request: Request, state: AppState = Depends(get_state)) -> dict:
     """Reloads configuration from disk without restarting the process.
     Runtime state (health, cooldowns, usage counters) is preserved for

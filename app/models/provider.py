@@ -143,10 +143,23 @@ class AliasTarget(BaseModel):
     model: str
 
 
+class AdminKeyConfig(BaseModel):
+    name: str
+    value: str
+
+    @field_validator("value")
+    @classmethod
+    def value_must_not_be_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("admin key value resolved to an empty string (check env var)")
+        return v
+
+
 class ServerConfig(BaseModel):
     host: str = "0.0.0.0"
     port: int = 8000
     client_keys: list[str] = Field(default_factory=list)
+    admin_keys: list[AdminKeyConfig] = Field(default_factory=list)
     require_auth: bool = True
 
 

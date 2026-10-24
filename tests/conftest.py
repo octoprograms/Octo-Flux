@@ -10,6 +10,9 @@ from app.core.config import _resolve_env_recursive, load_config, load_yaml_text
 from app.models.provider import OctoFluxConfig
 
 
+ADMIN = {"Authorization": "Bearer test-admin"}
+
+
 def make_config(yaml_text: str) -> OctoFluxConfig:
     raw = load_yaml_text(textwrap.dedent(yaml_text))
     resolved = _resolve_env_recursive(raw)
@@ -24,6 +27,7 @@ def two_provider_config() -> OctoFluxConfig:
         """
         server:
           require_auth: false
+          admin_keys: [{name: test, value: test-admin}]
         routing:
           max_total_attempts: 6
         providers:

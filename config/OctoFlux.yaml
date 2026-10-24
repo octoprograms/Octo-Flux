@@ -4,6 +4,9 @@ server:
   require_auth: true
   client_keys:
     - "${OctoFlux_CLIENT_KEY:-OctoFlux-dev-key}"
+  # Dashboard and /admin/* access. Client keys do not open /admin.
+  admin_keys:
+    - {name: owner, value: "${OctoFlux_ADMIN_KEY}"}
 
 routing:
   default_key_selection: round_robin
