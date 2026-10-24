@@ -13,6 +13,12 @@ from app.models.provider import OctoFluxConfig
 ADMIN = {"Authorization": "Bearer test-admin"}
 
 
+@pytest.fixture(autouse=True)
+def _isolated_usage_db(tmp_path, monkeypatch):
+    # Keep tests off the real data/usage.db.
+    monkeypatch.setenv("OctoFlux_USAGE_DB", str(tmp_path / "usage.db"))
+
+
 def make_config(yaml_text: str) -> OctoFluxConfig:
     raw = load_yaml_text(textwrap.dedent(yaml_text))
     resolved = _resolve_env_recursive(raw)

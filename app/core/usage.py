@@ -85,6 +85,15 @@ class UsageRegistry:
         self._connection.execute(
             "CREATE TABLE IF NOT EXISTS usage_meta (name TEXT PRIMARY KEY, value TEXT NOT NULL)"
         )
+        self._connection.execute(
+            """CREATE TABLE IF NOT EXISTS limit_counters (
+                scope TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                key_name TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                PRIMARY KEY (scope, provider, key_name)
+            )"""
+        )
         self._load()
 
     def _load(self) -> None:
@@ -130,6 +139,36 @@ class UsageRegistry:
                 (str(self.started_at),),
             )
 
+    def flush(self) -> None:
+        """Write counters to SQLite (called every 60 s and on shutdown, not per request)."""
+        with self._lock:
+            self._persist()
+
+    def save_limits(self, rows: list[tuple[str, str, str, dict]]) -> None:
+        if self._connection is None:
+            return
+        import json
+
+        with self._lock, self._connection:
+            self._connection.execute("DELETE FROM limit_counters")
+            self._connection.executemany(
+                "INSERT INTO limit_counters(scope, provider, key_name, payload) VALUES (?, ?, ?, ?)",
+                [(scope, provider, key, json.dumps(payload)) for scope, provider, key, payload in rows],
+            )
+
+    def load_limits(self) -> list[tuple[str, str, str, dict]]:
+        if self._connection is None:
+            return []
+        import json
+
+        with self._lock:
+            return [
+                (scope, provider, key, json.loads(payload))
+                for scope, provider, key, payload in self._connection.execute(
+                    "SELECT scope, provider, key_name, payload FROM limit_counters"
+                )
+            ]
+
     def close(self) -> None:
         with self._lock:
             if self._connection is not None:
@@ -156,7 +195,6 @@ class UsageRegistry:
                     c.total_latency_ms += latency_ms
                 else:
                     c.failed_requests += 1
-            self._persist()
 
     def record_tokens(self, provider: str, model: str, key: str, input_tokens: int, output_tokens: int) -> None:
         with self._lock:
@@ -168,24 +206,20 @@ class UsageRegistry:
             ):
                 c.input_tokens += input_tokens
                 c.output_tokens += output_tokens
-            self._persist()
 
     def record_rate_limited(self, provider: str) -> None:
         with self._lock:
             self.global_counters.rate_limit_events += 1
             self._get(self._provider_counters, provider).rate_limit_events += 1
-            self._persist()
 
     def record_timeout(self, provider: str) -> None:
         with self._lock:
             self.global_counters.timeout_count += 1
             self._get(self._provider_counters, provider).timeout_count += 1
-            self._persist()
 
     def record_fallback(self) -> None:
         with self._lock:
             self.global_counters.fallback_count += 1
-            self._persist()
 
     def snapshot(self) -> dict:
         return {

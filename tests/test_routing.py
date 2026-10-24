@@ -82,11 +82,8 @@ providers:
 
 
 def _smart_state(tmp_path, routing: str = "smart", extra: str = "") -> AppState:
-    import os
-
     from tests.conftest import make_config
 
-    os.environ["OctoFlux_USAGE_DB"] = str(tmp_path / "usage.db")
     return AppState.build(make_config(SMART.format(routing=routing, extra=extra)))
 
 

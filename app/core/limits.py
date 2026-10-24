@@ -13,7 +13,7 @@ import math
 import time
 from dataclasses import dataclass, field
 
-from app.models.provider import KeyConfig, LimitsConfig, ProviderConfig
+from app.models.provider import KeyConfig, LimitsConfig, OctoFluxConfig, ProviderConfig
 
 _WINDOWS = {
     "requests_per_second": 1.0,
@@ -186,6 +186,28 @@ class LimitsRegistry:
         state = _sync(self._key_limits.get((provider_id, key_name)), cfg)
         self._key_limits[(provider_id, key_name)] = state
         return state
+
+    def dump(self) -> list[tuple[str, str, str, dict]]:
+        rows = [("provider", pid, "", {n: c.dump() for n, c in s.counters.items()}) for pid, s in self._provider_limits.items()]
+        rows += [("key", pid, name, {n: c.dump() for n, c in s.counters.items()}) for (pid, name), s in self._key_limits.items()]
+        return [row for row in rows if row[3]]
+
+    def load(self, rows: list[tuple[str, str, str, dict]], config: OctoFluxConfig) -> None:
+        """Restore counters saved by dump(); rows for providers/keys no longer configured are dropped."""
+        for scope, pid, key_name, payload in rows:
+            provider = config.providers.get(pid)
+            if provider is None:
+                continue
+            if scope == "provider":
+                state = self.provider(pid, provider.total_limits)
+            else:
+                key = next((k for k in provider.keys if k.name == key_name), None)
+                if key is None:
+                    continue
+                state = self.key(pid, key_name, effective_key_limits(provider, key))
+            for name, data in payload.items():
+                if name in state.counters:
+                    state.counters[name].load(data)
 
     def snapshot(self) -> dict:
         return {

@@ -100,9 +100,6 @@ providers:
 
 
 def _state(extra: str, tmp_path) -> AppState:
-    import os
-
-    os.environ["OctoFlux_USAGE_DB"] = str(tmp_path / "usage.db")
     return AppState.build(make_config(ONE_PROVIDER.format(extra=extra)))
 
 
@@ -177,3 +174,55 @@ def test_estimate_tokens():
 
     payload = {"messages": [{"content": "a" * 10}, {"content": [{"type": "text", "text": "b" * 6}]}], "max_tokens": 50}
     assert estimate_tokens(payload) == 4 + 50
+
+
+DAILY = ONE_PROVIDER.format(extra="limits: {requests_per_day: 100}")
+
+
+def _record(state: AppState, key: str, n: int) -> None:
+    from app.core.limits import effective_key_limits
+
+    provider = state.config.providers["solo"]
+    cfg = effective_key_limits(provider, next(k for k in provider.keys if k.name == key))
+    for _ in range(n):
+        state.limits.key("solo", key, cfg).record_request_start()
+
+
+def _daily_used(state: AppState, key: str) -> int:
+    return state.limits.snapshot()["keys"][f"solo:{key}"]["requests_per_day"]["used"]
+
+
+def test_limit_counters_survive_restart(tmp_path):
+    db = str(tmp_path / "persist.db")
+    state = AppState.build(make_config(DAILY), usage_db=db)
+    _record(state, "k1", 5)
+    state.flush()
+    state.usage.close()
+
+    restored = AppState.build(make_config(DAILY), usage_db=db)
+    _record(restored, "k1", 0)
+    assert _daily_used(restored, "k1") == 5
+
+
+def test_unknown_keys_dropped_on_load(tmp_path):
+    db = str(tmp_path / "persist.db")
+    state = AppState.build(make_config(DAILY), usage_db=db)
+    _record(state, "k2", 3)
+    state.flush()
+    state.usage.close()
+
+    without_k2 = DAILY.replace('      - {name: k2, value: "v2"}\n', "")
+    restored = AppState.build(make_config(without_k2), usage_db=db)
+    assert "solo:k2" not in restored.limits.snapshot()["keys"]
+
+
+def test_usage_not_written_per_request(tmp_path):
+    state = AppState.build(make_config(DAILY), usage_db=str(tmp_path / "persist.db"))
+    calls = []
+    state.usage._persist = lambda: calls.append(1)
+    for _ in range(10):
+        state.usage.record_attempt("solo", "m", "k1", True, 5.0)
+        state.usage.record_tokens("solo", "m", "k1", 1, 1)
+    assert calls == []
+    state.usage.flush()
+    assert calls == [1]
